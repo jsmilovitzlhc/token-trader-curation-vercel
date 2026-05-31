@@ -1,0 +1,204 @@
+{% extends 'base.html' %}
+
+{% block title %}Scrape Articles - Token Trader{% endblock %}
+
+{% block content %}
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px;">
+    <h2>Article Scraper</h2>
+    <button id="runScrape" class="btn btn-primary">Run Scraper Now</button>
+</div>
+
+<div class="stats">
+    <div class="stat">
+        <div class="stat-value">{{ scraped_count }}</div>
+        <div class="stat-label">Pending Review</div>
+    </div>
+    <div class="stat">
+        <div class="stat-value">{{ sources|length }}</div>
+        <div class="stat-label">Active Sources</div>
+    </div>
+</div>
+
+<div id="scrapeResult" class="alert" style="display: none;"></div>
+
+<!-- Scrape Sources -->
+<div class="card">
+    <h3 style="margin-bottom: 16px;">Scrape Sources</h3>
+
+    <form action="{{ url_for('add_source') }}" method="POST" style="margin-bottom: 24px; padding-bottom: 24px; border-bottom: 1px solid #eee;">
+        <div class="form-row">
+            <div class="form-group">
+                <label>Name</label>
+                <input type="text" name="name" placeholder="Source name" required>
+            </div>
+            <div class="form-group">
+                <label>Type</label>
+                <select name="source_type">
+                    <option value="rss">RSS Feed</option>
+                    <option value="google_news">Google News Search</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>URL (for RSS)</label>
+                <input type="text" name="url" placeholder="https://example.com/feed.xml">
+            </div>
+            <div class="form-group">
+                <label>Keywords (for Google News)</label>
+                <input type="text" name="keywords" placeholder="AI inference pricing">
+            </div>
+            <div class="form-group">
+                <label>Category</label>
+                <select name="category">
+                    {% for cat in categories %}
+                    <option value="{{ cat }}">{{ cat }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+        </div>
+        <button type="submit" class="btn btn-secondary">Add Source</button>
+    </form>
+
+    <table style="width: 100%; border-collapse: collapse;">
+        <thead>
+            <tr style="text-align: left; border-bottom: 2px solid #eee;">
+                <th style="padding: 8px 0;">Name</th>
+                <th>Type</th>
+                <th>URL / Keywords</th>
+                <th>Category</th>
+                <th>Last Scraped</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for source in sources %}
+            <tr style="border-bottom: 1px solid #eee; opacity: {{ '1' if source.enabled else '0.5' }};">
+                <td style="padding: 12px 0;">{{ source.name }}</td>
+                <td><span class="tag">{{ source.source_type }}</span></td>
+                <td style="max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                    {{ source.url or source.keywords }}
+                </td>
+                <td><span class="tag tag-category">{{ source.category }}</span></td>
+                <td style="font-size: 12px; color: #666;">
+                    {{ source.last_scraped.strftime('%Y-%m-%d %H:%M') if source.last_scraped else 'Never' }}
+                </td>
+                <td>
+                    <form action="{{ url_for('toggle_source', source_id=source.id) }}" method="POST" style="display: inline;">
+                        <button type="submit" class="btn btn-sm btn-secondary">
+                            {{ 'Disable' if source.enabled else 'Enable' }}
+                        </button>
+                    </form>
+                    <form action="{{ url_for('delete_source', source_id=source.id) }}" method="POST" style="display: inline;">
+                        <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Delete this source?')">Delete</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<!-- Scraped Articles for Review -->
+{% if recent_scraped %}
+<div class="card">
+    <h3 style="margin-bottom: 16px;">Articles to Review ({{ scraped_count }})</h3>
+
+    <form id="reviewForm" method="POST">
+        <div class="bulk-actions">
+            <input type="checkbox" id="selectAll" style="margin-right: 8px;">
+            <label for="selectAll" style="margin-right: 16px;">Select All</label>
+            <button type="submit" formaction="{{ url_for('approve_scraped') }}" class="btn btn-primary btn-sm">
+                Approve Selected
+            </button>
+            <button type="submit" formaction="{{ url_for('dismiss_scraped') }}" class="btn btn-danger btn-sm">
+                Dismiss Selected
+            </button>
+        </div>
+
+        <ul class="link-list">
+            {% for link in recent_scraped %}
+            <li class="link-item">
+                <div class="link-checkbox">
+                    <input type="checkbox" name="link_ids" value="{{ link.id }}" class="article-checkbox">
+                </div>
+                <div class="link-content">
+                    <div class="link-title">
+                        <a href="{{ link.url }}" target="_blank">{{ link.title or 'No title' }}</a>
+                    </div>
+                    <div class="link-meta">
+                        {{ link.source }}
+                        {% if link.scraped_from %} | From: {{ link.scraped_from }}{% endif %}
+                        {% if link.published_date %} | {{ link.published_date[:16] }}{% endif %}
+                    </div>
+                    {% if link.description %}
+                    <div class="link-description">{{ link.description[:200] }}{% if link.description|length > 200 %}...{% endif %}</div>
+                    {% endif %}
+                    <div class="link-tags">
+                        <span class="tag tag-category">{{ link.category }}</span>
+                    </div>
+                </div>
+                <div class="link-actions">
+                    <a href="{{ url_for('edit_link', link_id=link.id) }}" class="btn btn-sm btn-secondary">Edit</a>
+                </div>
+            </li>
+            {% endfor %}
+        </ul>
+    </form>
+</div>
+{% else %}
+<div class="card" style="text-align: center; padding: 48px;">
+    <p style="color: #666; margin-bottom: 16px;">No scraped articles pending review.</p>
+    <button onclick="document.getElementById('runScrape').click();" class="btn btn-primary">
+        Run Scraper to Find Articles
+    </button>
+</div>
+{% endif %}
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.getElementById('selectAll').addEventListener('change', function() {
+    const checkboxes = document.querySelectorAll('.article-checkbox');
+    checkboxes.forEach(cb => cb.checked = this.checked);
+});
+
+document.getElementById('runScrape').addEventListener('click', async function() {
+    const btn = this;
+    const resultDiv = document.getElementById('scrapeResult');
+
+    btn.disabled = true;
+    btn.textContent = 'Scraping...';
+    resultDiv.style.display = 'none';
+
+    try {
+        const response = await fetch('{{ url_for("run_scrape") }}', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'}
+        });
+        const data = await response.json();
+
+        if (data.success) {
+            resultDiv.className = 'alert';
+            resultDiv.style.background = '#f0fdf4';
+            resultDiv.style.color = '#166534';
+            resultDiv.style.border = '1px solid #bbf7d0';
+            resultDiv.textContent = `Found ${data.new_articles} new articles!`;
+            resultDiv.style.display = 'block';
+
+            if (data.new_articles > 0) {
+                setTimeout(() => location.reload(), 1500);
+            }
+        } else {
+            throw new Error(data.error || 'Scraping failed');
+        }
+    } catch (err) {
+        resultDiv.className = 'alert alert-error';
+        resultDiv.textContent = 'Error: ' + err.message;
+        resultDiv.style.display = 'block';
+    }
+
+    btn.disabled = false;
+    btn.textContent = 'Run Scraper Now';
+});
+</script>
+{% endblock %}

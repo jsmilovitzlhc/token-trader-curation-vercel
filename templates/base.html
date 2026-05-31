@@ -235,6 +235,7 @@
             background: #1a1a1a;
             color: #fff;
         }
+        .tag-status.scraped { background: #8b5cf6; }
         .tag-status.saved { background: #6b7280; }
         .tag-status.scheduled { background: #3b82f6; }
         .tag-status.published { background: #22c55e; }
@@ -278,7 +279,9 @@
         <h1>TOKEN TRADER CURATION</h1>
         <nav>
             <a href="{{ url_for('index') }}">Links</a>
-            <a href="{{ url_for('add_link') }}">+ Add Link</a>
+            <a href="{{ url_for('add_link') }}">+ Add</a>
+            <a href="{{ url_for('scrape_page') }}">Scrape</a>
+            <a href="{{ url_for('beehiiv_page') }}">Beehiiv</a>
             <a href="{{ url_for('export_links') }}">Export</a>
             <a href="{{ url_for('logout') }}">Logout</a>
         </nav>

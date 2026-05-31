@@ -1,0 +1,181 @@
+{% extends 'base.html' %}
+
+{% block title %}Beehiiv Publisher - Token Trader{% endblock %}
+
+{% block content %}
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px;">
+    <h2>Publish to Beehiiv</h2>
+    <a href="{{ url_for('index', status='scheduled') }}" class="btn btn-secondary">View Scheduled Links</a>
+</div>
+
+{% if not beehiiv_configured %}
+<div class="alert" style="background: #fef3c7; border: 1px solid #fcd34d; color: #92400e;">
+    <strong>Beehiiv not configured.</strong> Add BEEHIIV_API_KEY and BEEHIIV_PUBLICATION_ID environment variables in Vercel to enable direct publishing.
+    <br><br>
+    <a href="https://app.beehiiv.com/settings/integrations" target="_blank" style="color: #92400e;">Get your API key from Beehiiv Settings</a>
+</div>
+{% endif %}
+
+<div class="stats">
+    <div class="stat">
+        <div class="stat-value">{{ links|length }}</div>
+        <div class="stat-label">Scheduled Links</div>
+    </div>
+    <div class="stat">
+        <div class="stat-value">{{ by_category|length }}</div>
+        <div class="stat-label">Categories</div>
+    </div>
+</div>
+
+<!-- Issue Filter -->
+<div class="filters">
+    <form method="GET" style="display: flex; gap: 12px; align-items: center;">
+        <select name="issue" onchange="this.form.submit()">
+            <option value="">All Issues</option>
+            {% for issue in issues %}
+            <option value="{{ issue }}" {{ 'selected' if issue == selected_issue else '' }}>{{ issue }}</option>
+            {% endfor %}
+        </select>
+    </form>
+</div>
+
+{% if links %}
+<div class="card">
+    <h3 style="margin-bottom: 16px;">Newsletter Content</h3>
+
+    <form id="publishForm">
+        <div class="form-row" style="margin-bottom: 24px;">
+            <div class="form-group">
+                <label>Newsletter Title</label>
+                <input type="text" name="title" id="newsletterTitle" value="The Token Trader - {{ selected_issue or 'Weekly Digest' }}" placeholder="Newsletter title">
+            </div>
+            <div class="form-group">
+                <label>Issue</label>
+                <input type="text" name="issue" value="{{ selected_issue }}" placeholder="e.g., 2026-W23">
+            </div>
+        </div>
+
+        {% if beehiiv_configured %}
+        <button type="submit" class="btn btn-primary" id="publishBtn">
+            Create Draft in Beehiiv
+        </button>
+        {% endif %}
+        <button type="button" class="btn btn-secondary" onclick="copyToClipboard()">
+            Copy HTML to Clipboard
+        </button>
+    </form>
+
+    <div id="publishResult" class="alert" style="display: none; margin-top: 16px;"></div>
+
+    <h4 style="margin-top: 32px; margin-bottom: 16px; color: #666;">Preview:</h4>
+
+    <div class="export-preview" style="border: 2px solid #c9a227;">
+        {{ html_preview|safe }}
+    </div>
+
+    <!-- Hidden textarea for clipboard -->
+    <textarea id="htmlContent" style="position: absolute; left: -9999px;">{{ html_preview }}</textarea>
+</div>
+
+<!-- Links by Category -->
+<div class="card">
+    <h3 style="margin-bottom: 16px;">Links by Category</h3>
+
+    {% for category, cat_links in by_category.items() %}
+    <div style="margin-bottom: 24px;">
+        <h4 style="color: #c9a227; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid #eee;">
+            {{ category }} ({{ cat_links|length }})
+        </h4>
+        <ul class="link-list">
+            {% for link in cat_links %}
+            <li class="link-item" style="margin-bottom: 8px; padding: 12px;">
+                <div class="link-content">
+                    <div class="link-title">
+                        <a href="{{ link.url }}" target="_blank">{{ link.title }}</a>
+                    </div>
+                    <div class="link-meta">{{ link.source }}</div>
+                    {% if link.notes %}
+                    <div class="link-notes">{{ link.notes }}</div>
+                    {% endif %}
+                </div>
+                <div class="link-actions">
+                    <a href="{{ url_for('edit_link', link_id=link.id) }}" class="btn btn-sm btn-secondary">Edit</a>
+                </div>
+            </li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endfor %}
+</div>
+
+{% else %}
+<div class="card" style="text-align: center; padding: 48px;">
+    <p style="color: #666; margin-bottom: 16px;">No scheduled links to publish.</p>
+    <p style="color: #888; font-size: 14px;">
+        Mark links as "Scheduled" from the <a href="{{ url_for('index') }}">Links page</a> to include them in your newsletter.
+    </p>
+</div>
+{% endif %}
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+function copyToClipboard() {
+    const textarea = document.getElementById('htmlContent');
+    textarea.style.position = 'static';
+    textarea.select();
+    document.execCommand('copy');
+    textarea.style.position = 'absolute';
+    textarea.style.left = '-9999px';
+
+    const resultDiv = document.getElementById('publishResult');
+    resultDiv.style.background = '#f0fdf4';
+    resultDiv.style.color = '#166534';
+    resultDiv.style.border = '1px solid #bbf7d0';
+    resultDiv.textContent = 'HTML copied to clipboard! Paste into Beehiiv editor.';
+    resultDiv.style.display = 'block';
+
+    setTimeout(() => resultDiv.style.display = 'none', 3000);
+}
+
+{% if beehiiv_configured %}
+document.getElementById('publishForm').addEventListener('submit', async function(e) {
+    e.preventDefault();
+
+    const btn = document.getElementById('publishBtn');
+    const resultDiv = document.getElementById('publishResult');
+
+    btn.disabled = true;
+    btn.textContent = 'Publishing...';
+
+    try {
+        const formData = new FormData(this);
+
+        const response = await fetch('{{ url_for("publish_beehiiv") }}', {
+            method: 'POST',
+            body: formData
+        });
+        const data = await response.json();
+
+        if (data.success) {
+            resultDiv.style.background = '#f0fdf4';
+            resultDiv.style.color = '#166534';
+            resultDiv.style.border = '1px solid #bbf7d0';
+            resultDiv.innerHTML = 'Draft created in Beehiiv! <a href="https://app.beehiiv.com" target="_blank" style="color: #166534;">Open Beehiiv to review and send.</a>';
+            resultDiv.style.display = 'block';
+        } else {
+            throw new Error(data.error || 'Publishing failed');
+        }
+    } catch (err) {
+        resultDiv.className = 'alert alert-error';
+        resultDiv.textContent = 'Error: ' + err.message;
+        resultDiv.style.display = 'block';
+    }
+
+    btn.disabled = false;
+    btn.textContent = 'Create Draft in Beehiiv';
+});
+{% endif %}
+</script>
+{% endblock %}

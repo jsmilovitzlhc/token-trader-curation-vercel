@@ -2,6 +2,10 @@
 Token Trader Link Curation Tool
 
 A simple web app for collecting and curating links for the newsletter.
+Features:
+- Manual link curation
+- Automated article scraping from RSS feeds and Google News
+- Beehiiv newsletter integration
 Vercel + Postgres version.
 """
 
@@ -9,9 +13,11 @@ import os
 import re
 import json
 import requests
-from datetime import datetime
+import xml.etree.ElementTree as ET
+from datetime import datetime, timedelta
 from functools import wraps
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote_plus
+from html import unescape
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -24,6 +30,8 @@ app.secret_key = os.environ.get('SECRET_KEY', 'token-trader-dev-key-change-in-pr
 # Config
 DATABASE_URL = os.environ.get('POSTGRES_URL', os.environ.get('DATABASE_URL', ''))
 PASSWORD = os.environ.get('CURATION_PASSWORD', 'TOKENTRADER')
+BEEHIIV_API_KEY = os.environ.get('BEEHIIV_API_KEY', '')
+BEEHIIV_PUBLICATION_ID = os.environ.get('BEEHIIV_PUBLICATION_ID', '')
 
 # Categories for Token Trader
 CATEGORIES = [
@@ -41,7 +49,7 @@ CATEGORIES = [
     'Other',
 ]
 
-STATUSES = ['saved', 'scheduled', 'published', 'archived']
+STATUSES = ['scraped', 'saved', 'scheduled', 'published', 'archived']
 
 
 def get_db():
@@ -68,6 +76,8 @@ def init_db():
         return
     db = get_db()
     cur = db.cursor()
+
+    # Main links table
     cur.execute('''
         CREATE TABLE IF NOT EXISTS links (
             id SERIAL PRIMARY KEY,
@@ -83,12 +93,270 @@ def init_db():
             status TEXT DEFAULT 'saved',
             issue TEXT DEFAULT '',
             priority INTEGER DEFAULT 0,
+            scraped_from TEXT DEFAULT '',
+            published_date TEXT DEFAULT '',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+
+    # Scrape sources table
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS scrape_sources (
+            id SERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            source_type TEXT NOT NULL,
+            url TEXT,
+            keywords TEXT,
+            category TEXT DEFAULT 'Other',
+            enabled BOOLEAN DEFAULT TRUE,
+            last_scraped TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    # Add new columns if they don't exist (for existing installations)
+    try:
+        cur.execute("ALTER TABLE links ADD COLUMN IF NOT EXISTS scraped_from TEXT DEFAULT ''")
+        cur.execute("ALTER TABLE links ADD COLUMN IF NOT EXISTS published_date TEXT DEFAULT ''")
+    except:
+        pass
+
     db.commit()
     cur.close()
+
+    # Initialize default scrape sources
+    init_default_sources()
+
+
+def init_default_sources():
+    """Initialize default scrape sources for Token Trader topics."""
+    db = get_db()
+    cur = db.cursor()
+
+    # Check if sources already exist
+    cur.execute("SELECT COUNT(*) as count FROM scrape_sources")
+    if cur.fetchone()['count'] > 0:
+        cur.close()
+        return
+
+    # Default RSS feeds and search queries for Token Trader
+    default_sources = [
+        # RSS Feeds
+        ('TechCrunch AI', 'rss', 'https://techcrunch.com/tag/artificial-intelligence/feed/', '', 'Model Economics'),
+        ('Ars Technica Tech', 'rss', 'https://feeds.arstechnica.com/arstechnica/technology-lab', '', 'Other'),
+        ('The Verge AI', 'rss', 'https://www.theverge.com/rss/ai-artificial-intelligence/index.xml', '', 'Model Economics'),
+        ('Reuters Tech', 'rss', 'https://www.reutersagency.com/feed/?taxonomy=best-topics&post_type=best&best-type=reuters-best-technology', '', 'Market Analysis'),
+        ('Hacker News', 'rss', 'https://hnrss.org/newest?q=GPU+OR+inference+OR+NVIDIA+OR+OpenAI', '', 'Other'),
+
+        # Google News searches for Token Trader topics
+        ('CME Compute Futures', 'google_news', '', 'CME compute futures GPU', 'Compute Futures'),
+        ('GPU Pricing News', 'google_news', '', 'GPU pricing NVIDIA H100 rental', 'GPU Markets'),
+        ('AI Inference Pricing', 'google_news', '', 'AI inference pricing tokens API', 'Inference Pricing'),
+        ('Data Center AI', 'google_news', '', 'data center AI infrastructure', 'Data Centers'),
+        ('OpenAI Anthropic Pricing', 'google_news', '', 'OpenAI Anthropic Google AI pricing', 'Inference Pricing'),
+        ('Cloud AI Providers', 'google_news', '', 'AWS Azure Google Cloud AI compute', 'Cloud Providers'),
+        ('AI Chip Supply', 'google_news', '', 'NVIDIA AMD Intel AI chips supply', 'Chip Supply Chain'),
+        ('Compute Marketplace', 'google_news', '', 'CoreWeave Lambda Labs Together AI', 'Cloud Providers'),
+        ('AI Regulation', 'google_news', '', 'AI regulation CFTC compute commodity', 'Regulatory'),
+    ]
+
+    for name, source_type, url, keywords, category in default_sources:
+        try:
+            cur.execute('''
+                INSERT INTO scrape_sources (name, source_type, url, keywords, category)
+                VALUES (%s, %s, %s, %s, %s)
+            ''', (name, source_type, url, keywords, category))
+        except:
+            pass
+
+    db.commit()
+    cur.close()
+
+
+def parse_rss_feed(url):
+    """Parse an RSS feed and return articles."""
+    articles = []
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
+        }
+        response = requests.get(url, headers=headers, timeout=15)
+        root = ET.fromstring(response.content)
+
+        # Handle different RSS formats
+        items = root.findall('.//item') or root.findall('.//{http://www.w3.org/2005/Atom}entry')
+
+        for item in items[:10]:  # Limit to 10 most recent
+            # Standard RSS
+            title = item.find('title')
+            link = item.find('link')
+            description = item.find('description')
+            pub_date = item.find('pubDate')
+            author = item.find('author') or item.find('{http://purl.org/dc/elements/1.1/}creator')
+
+            # Atom format fallback
+            if link is None:
+                link = item.find('{http://www.w3.org/2005/Atom}link')
+                if link is not None:
+                    link_href = link.get('href')
+                else:
+                    continue
+            else:
+                link_href = link.text
+
+            if title is None:
+                title = item.find('{http://www.w3.org/2005/Atom}title')
+
+            title_text = title.text if title is not None else ''
+            desc_text = description.text if description is not None else ''
+
+            # Clean HTML from description
+            if desc_text:
+                desc_text = re.sub(r'<[^>]+>', '', desc_text)
+                desc_text = unescape(desc_text)[:500]
+
+            articles.append({
+                'url': link_href,
+                'title': unescape(title_text) if title_text else '',
+                'description': desc_text,
+                'published_date': pub_date.text if pub_date is not None else '',
+                'author': author.text if author is not None else '',
+            })
+    except Exception as e:
+        print(f"Error parsing RSS feed {url}: {e}")
+
+    return articles
+
+
+def search_google_news(keywords, days_back=7):
+    """Search Google News RSS for keywords."""
+    articles = []
+    try:
+        # Google News RSS search
+        encoded_query = quote_plus(keywords)
+        url = f"https://news.google.com/rss/search?q={encoded_query}+when:{days_back}d&hl=en-US&gl=US&ceid=US:en"
+
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
+        }
+        response = requests.get(url, headers=headers, timeout=15)
+        root = ET.fromstring(response.content)
+
+        for item in root.findall('.//item')[:8]:  # Limit results
+            title = item.find('title')
+            link = item.find('link')
+            pub_date = item.find('pubDate')
+            source = item.find('source')
+
+            if title is None or link is None:
+                continue
+
+            # Google News links redirect - try to get actual URL from link
+            actual_url = link.text
+
+            articles.append({
+                'url': actual_url,
+                'title': unescape(title.text) if title.text else '',
+                'description': '',
+                'published_date': pub_date.text if pub_date is not None else '',
+                'source': source.text if source is not None else '',
+                'author': '',
+            })
+    except Exception as e:
+        print(f"Error searching Google News for '{keywords}': {e}")
+
+    return articles
+
+
+def scrape_all_sources():
+    """Scrape all enabled sources and return new articles."""
+    db = get_db()
+    cur = db.cursor()
+
+    cur.execute("SELECT * FROM scrape_sources WHERE enabled = TRUE")
+    sources = cur.fetchall()
+
+    new_articles = []
+    for source in sources:
+        articles = []
+
+        if source['source_type'] == 'rss' and source['url']:
+            articles = parse_rss_feed(source['url'])
+        elif source['source_type'] == 'google_news' and source['keywords']:
+            articles = search_google_news(source['keywords'])
+
+        for article in articles:
+            # Check if URL already exists
+            cur.execute("SELECT id FROM links WHERE url = %s", (article['url'],))
+            if cur.fetchone():
+                continue
+
+            # Insert new article
+            try:
+                cur.execute('''
+                    INSERT INTO links (url, title, description, source, author, category, status, scraped_from, published_date)
+                    VALUES (%s, %s, %s, %s, %s, %s, 'scraped', %s, %s)
+                    RETURNING id
+                ''', (
+                    article['url'],
+                    article.get('title', ''),
+                    article.get('description', ''),
+                    article.get('source', source['name']),
+                    article.get('author', ''),
+                    source['category'],
+                    source['name'],
+                    article.get('published_date', '')
+                ))
+                new_id = cur.fetchone()['id']
+                new_articles.append({**article, 'id': new_id, 'source_name': source['name']})
+            except Exception as e:
+                print(f"Error inserting article: {e}")
+                db.rollback()
+                continue
+
+        # Update last_scraped timestamp
+        cur.execute(
+            "UPDATE scrape_sources SET last_scraped = CURRENT_TIMESTAMP WHERE id = %s",
+            (source['id'],)
+        )
+
+    db.commit()
+    cur.close()
+    return new_articles
+
+
+def publish_to_beehiiv(title, content_html, status='draft'):
+    """Publish content to Beehiiv."""
+    if not BEEHIIV_API_KEY or not BEEHIIV_PUBLICATION_ID:
+        return {'error': 'Beehiiv API credentials not configured'}
+
+    try:
+        headers = {
+            'Authorization': f'Bearer {BEEHIIV_API_KEY}',
+            'Content-Type': 'application/json'
+        }
+
+        data = {
+            'title': title,
+            'content_html': content_html,
+            'status': status,  # 'draft', 'confirmed', or 'archived'
+        }
+
+        response = requests.post(
+            f'https://api.beehiiv.com/v2/publications/{BEEHIIV_PUBLICATION_ID}/posts',
+            headers=headers,
+            json=data,
+            timeout=30
+        )
+
+        if response.status_code in [200, 201]:
+            return {'success': True, 'data': response.json()}
+        else:
+            return {'error': f"Beehiiv API error: {response.status_code} - {response.text}"}
+
+    except Exception as e:
+        return {'error': f"Error publishing to Beehiiv: {str(e)}"}
 
 
 def require_auth(f):
@@ -432,6 +700,275 @@ def export_links():
         return jsonify(data)
 
     return redirect(url_for('index'))
+
+
+@app.route('/scrape')
+@require_auth
+def scrape_page():
+    """Scrape management page."""
+    db = get_db()
+    cur = db.cursor()
+
+    # Get all sources
+    cur.execute("SELECT * FROM scrape_sources ORDER BY enabled DESC, name")
+    sources = cur.fetchall()
+
+    # Get scraped articles count
+    cur.execute("SELECT COUNT(*) as count FROM links WHERE status = 'scraped'")
+    scraped_count = cur.fetchone()['count']
+
+    # Get recent scraped articles
+    cur.execute("""
+        SELECT * FROM links
+        WHERE status = 'scraped'
+        ORDER BY created_at DESC
+        LIMIT 50
+    """)
+    recent_scraped = cur.fetchall()
+
+    cur.close()
+
+    return render_template('scrape.html',
+                          sources=sources,
+                          scraped_count=scraped_count,
+                          recent_scraped=recent_scraped,
+                          categories=CATEGORIES)
+
+
+@app.route('/scrape/run', methods=['POST'])
+@require_auth
+def run_scrape():
+    """Run scraping on all enabled sources."""
+    new_articles = scrape_all_sources()
+    return jsonify({
+        'success': True,
+        'new_articles': len(new_articles),
+        'articles': new_articles[:20]  # Return first 20 for display
+    })
+
+
+@app.route('/scrape/source', methods=['POST'])
+@require_auth
+def add_source():
+    """Add a new scrape source."""
+    db = get_db()
+    cur = db.cursor()
+
+    name = request.form.get('name', '').strip()
+    source_type = request.form.get('source_type', 'rss')
+    url = request.form.get('url', '').strip()
+    keywords = request.form.get('keywords', '').strip()
+    category = request.form.get('category', 'Other')
+
+    if not name:
+        return redirect(url_for('scrape_page'))
+
+    try:
+        cur.execute('''
+            INSERT INTO scrape_sources (name, source_type, url, keywords, category)
+            VALUES (%s, %s, %s, %s, %s)
+        ''', (name, source_type, url, keywords, category))
+        db.commit()
+    except Exception as e:
+        print(f"Error adding source: {e}")
+
+    cur.close()
+    return redirect(url_for('scrape_page'))
+
+
+@app.route('/scrape/source/<int:source_id>/toggle', methods=['POST'])
+@require_auth
+def toggle_source(source_id):
+    """Toggle a source's enabled status."""
+    db = get_db()
+    cur = db.cursor()
+    cur.execute(
+        "UPDATE scrape_sources SET enabled = NOT enabled WHERE id = %s",
+        (source_id,)
+    )
+    db.commit()
+    cur.close()
+    return redirect(url_for('scrape_page'))
+
+
+@app.route('/scrape/source/<int:source_id>/delete', methods=['POST'])
+@require_auth
+def delete_source(source_id):
+    """Delete a scrape source."""
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("DELETE FROM scrape_sources WHERE id = %s", (source_id,))
+    db.commit()
+    cur.close()
+    return redirect(url_for('scrape_page'))
+
+
+@app.route('/scrape/approve', methods=['POST'])
+@require_auth
+def approve_scraped():
+    """Move scraped articles to saved status."""
+    link_ids = request.form.getlist('link_ids')
+    if not link_ids:
+        return redirect(url_for('scrape_page'))
+
+    db = get_db()
+    cur = db.cursor()
+    link_ids = [int(lid) for lid in link_ids]
+    cur.execute(
+        "UPDATE links SET status = 'saved', updated_at = CURRENT_TIMESTAMP WHERE id = ANY(%s)",
+        (link_ids,)
+    )
+    db.commit()
+    cur.close()
+    return redirect(url_for('scrape_page'))
+
+
+@app.route('/scrape/dismiss', methods=['POST'])
+@require_auth
+def dismiss_scraped():
+    """Archive/dismiss scraped articles."""
+    link_ids = request.form.getlist('link_ids')
+    if not link_ids:
+        return redirect(url_for('scrape_page'))
+
+    db = get_db()
+    cur = db.cursor()
+    link_ids = [int(lid) for lid in link_ids]
+    cur.execute("DELETE FROM links WHERE id = ANY(%s)", (link_ids,))
+    db.commit()
+    cur.close()
+    return redirect(url_for('scrape_page'))
+
+
+@app.route('/beehiiv')
+@require_auth
+def beehiiv_page():
+    """Beehiiv integration page."""
+    db = get_db()
+    cur = db.cursor()
+
+    issue = request.args.get('issue', '')
+
+    # Get scheduled links
+    query = "SELECT * FROM links WHERE status = 'scheduled'"
+    params = []
+    if issue:
+        query += ' AND issue = %s'
+        params.append(issue)
+    query += ' ORDER BY category, priority DESC'
+
+    cur.execute(query, params)
+    links = cur.fetchall()
+
+    # Get unique issues
+    cur.execute("SELECT DISTINCT issue FROM links WHERE issue != '' ORDER BY issue DESC")
+    issues = [i['issue'] for i in cur.fetchall()]
+
+    cur.close()
+
+    # Group by category
+    by_category = {}
+    for link in links:
+        cat = link['category']
+        if cat not in by_category:
+            by_category[cat] = []
+        by_category[cat].append(link)
+
+    # Generate HTML preview
+    html_preview = ""
+    for category, cat_links in by_category.items():
+        html_preview += f'<h3 style="color: #c9a227; margin-top: 24px; font-family: Georgia, serif;">{category}</h3>\n'
+        for link in cat_links:
+            html_preview += '<div style="margin-bottom: 16px;">\n'
+            html_preview += f'  <strong><a href="{link["url"]}" style="color: #1a1a1a; text-decoration: none;">{link["title"]}</a></strong>'
+            if link['source']:
+                html_preview += f' <span style="color: #888;">— {link["source"]}</span>'
+            html_preview += '<br>\n'
+            if link['description']:
+                html_preview += f'  <span style="color: #333; font-size: 14px;">{link["description"]}</span><br>\n'
+            if link['notes']:
+                html_preview += f'  <em style="color: #666; font-size: 13px;">{link["notes"]}</em>\n'
+            html_preview += '</div>\n'
+
+    beehiiv_configured = bool(BEEHIIV_API_KEY and BEEHIIV_PUBLICATION_ID)
+
+    return render_template('beehiiv.html',
+                          links=links,
+                          by_category=by_category,
+                          html_preview=html_preview,
+                          issues=issues,
+                          selected_issue=issue,
+                          beehiiv_configured=beehiiv_configured)
+
+
+@app.route('/beehiiv/publish', methods=['POST'])
+@require_auth
+def publish_beehiiv():
+    """Publish scheduled content to Beehiiv."""
+    title = request.form.get('title', 'The Token Trader Newsletter')
+    issue = request.form.get('issue', '')
+
+    db = get_db()
+    cur = db.cursor()
+
+    # Get scheduled links
+    query = "SELECT * FROM links WHERE status = 'scheduled'"
+    params = []
+    if issue:
+        query += ' AND issue = %s'
+        params.append(issue)
+    query += ' ORDER BY category, priority DESC'
+
+    cur.execute(query, params)
+    links = cur.fetchall()
+    cur.close()
+
+    if not links:
+        return jsonify({'error': 'No scheduled links to publish'})
+
+    # Group by category
+    by_category = {}
+    for link in links:
+        cat = link['category']
+        if cat not in by_category:
+            by_category[cat] = []
+        by_category[cat].append(link)
+
+    # Build HTML content
+    html_content = '<div style="font-family: Georgia, serif; max-width: 600px; margin: 0 auto;">\n'
+
+    for category, cat_links in by_category.items():
+        html_content += f'<h3 style="color: #c9a227; margin-top: 24px; border-bottom: 1px solid #eee; padding-bottom: 8px;">{category}</h3>\n'
+        for link in cat_links:
+            html_content += '<div style="margin-bottom: 20px;">\n'
+            html_content += f'  <p style="margin: 0;"><strong><a href="{link["url"]}" style="color: #1a1a1a;">{link["title"]}</a></strong>'
+            if link['source']:
+                html_content += f' <span style="color: #888;">— {link["source"]}</span>'
+            html_content += '</p>\n'
+            if link['description']:
+                html_content += f'  <p style="margin: 4px 0; color: #333; font-size: 15px;">{link["description"]}</p>\n'
+            if link['notes']:
+                html_content += f'  <p style="margin: 4px 0; color: #666; font-style: italic; font-size: 14px;">{link["notes"]}</p>\n'
+            html_content += '</div>\n'
+
+    html_content += '</div>'
+
+    # Publish to Beehiiv
+    result = publish_to_beehiiv(title, html_content, status='draft')
+
+    if result.get('success'):
+        # Mark links as published
+        db = get_db()
+        cur = db.cursor()
+        link_ids = [link['id'] for link in links]
+        cur.execute(
+            "UPDATE links SET status = 'published', updated_at = CURRENT_TIMESTAMP WHERE id = ANY(%s)",
+            (link_ids,)
+        )
+        db.commit()
+        cur.close()
+
+    return jsonify(result)
 
 
 # Initialize DB on first request
