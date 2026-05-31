@@ -1,0 +1,222 @@
+{% extends "base.html" %}
+
+{% block title %}Compose Newsletter — Token Trader Admin{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Compose Newsletter</h1>
+</div>
+
+<form method="POST" action="{{ url_for('preview_newsletter') }}" class="compose-form">
+    <div class="compose-grid">
+        <div class="compose-main">
+            <div class="card">
+                <h2>Newsletter Settings</h2>
+
+                <div class="form-group">
+                    <label for="issue">Issue</label>
+                    <select name="issue" id="issue">
+                        <option value="">Select Issue</option>
+                        {% for iss in issues %}
+                        <option value="{{ iss }}" {% if current_issue == iss %}selected{% endif %}>{{ iss }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label for="intro_text">Introduction Text</label>
+                    <textarea name="intro_text" id="intro_text" rows="4" placeholder="Write your introduction here..."></textarea>
+                </div>
+
+                <div class="form-group checkbox-group">
+                    <label>
+                        <input type="checkbox" name="include_benchmark" checked>
+                        Include Inference Price Index
+                    </label>
+                </div>
+
+                {% if latest_benchmark %}
+                <div class="form-group">
+                    <label for="benchmark_run_id">Benchmark Run</label>
+                    <select name="benchmark_run_id" id="benchmark_run_id">
+                        <option value="{{ latest_benchmark.run_id }}" selected>
+                            {{ latest_benchmark.run_id }} ({{ latest_benchmark.run_date.strftime('%Y-%m-%d') if latest_benchmark.run_date else 'N/A' }})
+                        </option>
+                    </select>
+                </div>
+                {% endif %}
+
+                <button type="submit" class="btn btn-primary btn-large">Preview Newsletter</button>
+            </div>
+        </div>
+
+        <div class="compose-sidebar">
+            <div class="card">
+                <h2>Scheduled Links ({{ links|length }})</h2>
+
+                {% if links_by_category %}
+                <div class="scheduled-links">
+                    {% for category, cat_links in links_by_category.items() %}
+                    <div class="category-group">
+                        <h3>{{ category }} ({{ cat_links|length }})</h3>
+                        <ul>
+                            {% for link in cat_links %}
+                            <li>
+                                <a href="{{ link.url }}" target="_blank">{{ link.title }}</a>
+                                <span class="source">{{ link.source }}</span>
+                            </li>
+                            {% endfor %}
+                        </ul>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% else %}
+                <p class="empty-state">
+                    No links scheduled. <a href="{{ url_for('links', status='saved') }}">Schedule some links</a> first.
+                </p>
+                {% endif %}
+            </div>
+
+            {% if latest_benchmark %}
+            <div class="card">
+                <h2>Latest Benchmark</h2>
+                <div class="benchmark-summary">
+                    <div class="summary-row">
+                        <span>Run:</span>
+                        <code>{{ latest_benchmark.run_id }}</code>
+                    </div>
+                    <div class="summary-row">
+                        <span>Date:</span>
+                        <span>{{ latest_benchmark.run_date.strftime('%Y-%m-%d') if latest_benchmark.run_date else 'N/A' }}</span>
+                    </div>
+                    <div class="summary-row">
+                        <span>Models:</span>
+                        <span>{{ latest_benchmark.models_tested }}</span>
+                    </div>
+                    <div class="summary-row">
+                        <span>Cost:</span>
+                        <span>${{ "%.2f"|format(latest_benchmark.total_cost) }}</span>
+                    </div>
+                </div>
+                <a href="{{ url_for('benchmark_results', run_id=latest_benchmark.run_id) }}" class="btn btn-sm" style="width: 100%; margin-top: 12px;">View Details</a>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</form>
+
+<style>
+.compose-grid {
+    display: grid;
+    grid-template-columns: 1fr 350px;
+    gap: 24px;
+}
+.compose-main .card {
+    padding: 24px;
+}
+.form-group {
+    margin-bottom: 20px;
+}
+.form-group label {
+    display: block;
+    font-weight: 600;
+    margin-bottom: 8px;
+    color: #333;
+}
+.form-group input[type="text"],
+.form-group textarea,
+.form-group select {
+    width: 100%;
+    padding: 12px;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    font-size: 14px;
+}
+.form-group textarea {
+    resize: vertical;
+    min-height: 100px;
+}
+.checkbox-group label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+}
+.checkbox-group input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+}
+.btn-large {
+    width: 100%;
+    padding: 16px;
+    font-size: 16px;
+}
+.scheduled-links {
+    max-height: 400px;
+    overflow-y: auto;
+}
+.category-group {
+    margin-bottom: 16px;
+}
+.category-group h3 {
+    font-size: 14px;
+    color: var(--gold);
+    margin: 0 0 8px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #eee;
+}
+.category-group ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+.category-group li {
+    padding: 8px 0;
+    border-bottom: 1px solid #f5f5f5;
+}
+.category-group li:last-child {
+    border-bottom: none;
+}
+.category-group a {
+    color: #1a1a1a;
+    text-decoration: none;
+    font-size: 13px;
+    display: block;
+}
+.category-group a:hover {
+    color: var(--gold);
+}
+.category-group .source {
+    font-size: 11px;
+    color: #999;
+    display: block;
+    margin-top: 2px;
+}
+.benchmark-summary {
+    padding: 12px;
+    background: #f9f9f9;
+    border-radius: 6px;
+}
+.summary-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 6px 0;
+    font-size: 13px;
+}
+.summary-row span:first-child {
+    color: #666;
+}
+.empty-state {
+    text-align: center;
+    color: #666;
+    padding: 20px;
+    font-size: 14px;
+}
+
+@media (max-width: 900px) {
+    .compose-grid {
+        grid-template-columns: 1fr;
+    }
+}
+</style>
+{% endblock %}

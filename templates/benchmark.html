@@ -1,0 +1,243 @@
+{% extends "base.html" %}
+
+{% block title %}Benchmark — Token Trader Admin{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Inference Price Index</h1>
+</div>
+
+<div class="benchmark-grid">
+    <div class="card">
+        <h2>Run Benchmark</h2>
+        <p>Run the cost-per-completion benchmark across LLM providers to generate the Inference Price Index.</p>
+
+        <div class="benchmark-info">
+            <div class="info-row">
+                <span class="label">Tasks:</span>
+                <span class="value">150 (80 extraction, 70 classification)</span>
+            </div>
+            <div class="info-row">
+                <span class="label">Models:</span>
+                <span class="value">Claude Opus 4, Claude Sonnet 4, GPT-4o, GPT-4o-mini</span>
+            </div>
+            <div class="info-row">
+                <span class="label">Est. Cost:</span>
+                <span class="value">~$2-5 per run</span>
+            </div>
+        </div>
+
+        <div class="benchmark-note">
+            <strong>Note:</strong> Benchmarks are run via the CLI. Results are stored in the database for newsletter integration.
+        </div>
+
+        <div class="cli-instructions">
+            <h3>CLI Commands</h3>
+            <pre><code>cd ~/token-trader
+source .env  # Load API keys
+python3 main.py --estimate  # Check cost
+python3 main.py  # Run full benchmark</code></pre>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>Latest Results</h2>
+        {% if runs and runs[0].status == 'completed' %}
+        {% set latest = runs[0] %}
+        <div class="latest-results">
+            <div class="result-header">
+                <span class="run-id">{{ latest.run_id }}</span>
+                <span class="run-date">{{ latest.run_date.strftime('%Y-%m-%d') if latest.run_date else 'N/A' }}</span>
+            </div>
+            <div class="result-stats">
+                <div class="stat">
+                    <div class="stat-value">{{ latest.models_tested }}</div>
+                    <div class="stat-label">Models</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-value">{{ latest.total_calls }}</div>
+                    <div class="stat-label">API Calls</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-value">${{ "%.2f"|format(latest.total_cost) }}</div>
+                    <div class="stat-label">Total Cost</div>
+                </div>
+            </div>
+            <a href="{{ url_for('benchmark_results', run_id=latest.run_id) }}" class="btn btn-primary" style="width: 100%; margin-top: 16px;">View Full Results</a>
+        </div>
+        {% else %}
+        <p class="empty-state">No completed benchmark runs yet.</p>
+        {% endif %}
+    </div>
+</div>
+
+<div class="card">
+    <h2>Benchmark History</h2>
+    {% if runs %}
+    <table class="benchmark-table">
+        <thead>
+            <tr>
+                <th>Run ID</th>
+                <th>Date</th>
+                <th>Status</th>
+                <th>Models</th>
+                <th>Calls</th>
+                <th>Cost</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for run in runs %}
+            <tr>
+                <td><code>{{ run.run_id }}</code></td>
+                <td>{{ run.run_date.strftime('%Y-%m-%d %H:%M') if run.run_date else 'N/A' }}</td>
+                <td><span class="status-badge {{ run.status }}">{{ run.status }}</span></td>
+                <td>{{ run.models_tested }}</td>
+                <td>{{ run.total_calls }}</td>
+                <td>${{ "%.2f"|format(run.total_cost) }}</td>
+                <td>
+                    {% if run.status == 'completed' %}
+                    <a href="{{ url_for('benchmark_results', run_id=run.run_id) }}" class="btn btn-sm">View</a>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="empty-state">No benchmark runs recorded yet.</p>
+    {% endif %}
+</div>
+
+<style>
+.benchmark-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+    margin-bottom: 24px;
+}
+.benchmark-info {
+    margin: 20px 0;
+    padding: 16px;
+    background: #f9f9f9;
+    border-radius: 8px;
+}
+.info-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 8px 0;
+    border-bottom: 1px solid #eee;
+}
+.info-row:last-child {
+    border-bottom: none;
+}
+.info-row .label {
+    font-weight: 600;
+    color: #666;
+}
+.info-row .value {
+    color: #333;
+}
+.benchmark-note {
+    padding: 12px;
+    background: #fff3cd;
+    border-radius: 6px;
+    font-size: 13px;
+    margin-bottom: 20px;
+}
+.cli-instructions {
+    background: #1a1a1a;
+    border-radius: 8px;
+    padding: 16px;
+}
+.cli-instructions h3 {
+    color: #c9a227;
+    font-size: 14px;
+    margin: 0 0 12px;
+}
+.cli-instructions pre {
+    margin: 0;
+    color: #eee;
+    font-size: 13px;
+    line-height: 1.6;
+    overflow-x: auto;
+}
+.cli-instructions code {
+    font-family: 'Monaco', 'Menlo', monospace;
+}
+.latest-results {
+    padding: 16px;
+    background: #f9f9f9;
+    border-radius: 8px;
+}
+.result-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16px;
+}
+.run-id {
+    font-family: monospace;
+    background: #e0e0e0;
+    padding: 4px 8px;
+    border-radius: 4px;
+}
+.run-date {
+    color: #666;
+    font-size: 14px;
+}
+.result-stats {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+}
+.result-stats .stat {
+    text-align: center;
+}
+.result-stats .stat-value {
+    font-size: 24px;
+    font-weight: 700;
+    color: var(--gold);
+}
+.result-stats .stat-label {
+    font-size: 12px;
+    color: #666;
+}
+.benchmark-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+.benchmark-table th, .benchmark-table td {
+    padding: 12px;
+    text-align: left;
+    border-bottom: 1px solid #eee;
+}
+.benchmark-table th {
+    font-weight: 600;
+    color: #666;
+    font-size: 13px;
+}
+.status-badge {
+    display: inline-block;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: 600;
+}
+.status-badge.completed { background: #d4edda; color: #155724; }
+.status-badge.pending { background: #fff3cd; color: #856404; }
+.status-badge.running { background: #cce5ff; color: #004085; }
+.status-badge.failed { background: #f8d7da; color: #721c24; }
+.empty-state {
+    text-align: center;
+    color: #666;
+    padding: 40px;
+}
+
+@media (max-width: 768px) {
+    .benchmark-grid {
+        grid-template-columns: 1fr;
+    }
+}
+</style>
+{% endblock %}

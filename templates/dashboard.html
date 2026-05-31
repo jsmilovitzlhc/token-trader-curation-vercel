@@ -1,0 +1,286 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard — Token Trader Admin{% endblock %}
+
+{% block content %}
+<div class="dashboard-header">
+    <h1>Token Trader Admin</h1>
+    <p class="tagline">Inference is the new oil.</p>
+</div>
+
+<div class="dashboard-grid">
+    <!-- Quick Stats -->
+    <div class="card stats-card">
+        <h2>Content Pipeline</h2>
+        <div class="stats-grid">
+            <a href="{{ url_for('links', status='scraped') }}" class="stat-item">
+                <div class="stat-value">{{ link_counts.scraped }}</div>
+                <div class="stat-label">Scraped</div>
+            </a>
+            <a href="{{ url_for('links', status='saved') }}" class="stat-item">
+                <div class="stat-value">{{ link_counts.saved }}</div>
+                <div class="stat-label">Saved</div>
+            </a>
+            <a href="{{ url_for('links', status='scheduled') }}" class="stat-item">
+                <div class="stat-value">{{ link_counts.scheduled }}</div>
+                <div class="stat-label">Scheduled</div>
+            </a>
+            <a href="{{ url_for('links', status='published') }}" class="stat-item">
+                <div class="stat-value">{{ link_counts.published }}</div>
+                <div class="stat-label">Published</div>
+            </a>
+        </div>
+    </div>
+
+    <!-- Quick Actions -->
+    <div class="card actions-card">
+        <h2>Quick Actions</h2>
+        <div class="action-buttons">
+            <a href="{{ url_for('scrape_page') }}" class="btn btn-primary btn-large">
+                <span class="icon">📡</span> Run Scraper
+            </a>
+            <a href="{{ url_for('benchmark_page') }}" class="btn btn-secondary btn-large">
+                <span class="icon">📊</span> Run Benchmark
+            </a>
+            <a href="{{ url_for('compose_newsletter') }}" class="btn btn-gold btn-large">
+                <span class="icon">✉️</span> Compose Newsletter
+            </a>
+        </div>
+    </div>
+
+    <!-- High Relevance Articles -->
+    <div class="card full-width">
+        <div class="card-header">
+            <h2>High Relevance Articles</h2>
+            <a href="{{ url_for('links', status='scraped', min_relevance='15') }}" class="btn btn-sm">View All</a>
+        </div>
+        {% if high_relevance %}
+        <ul class="article-list">
+            {% for article in high_relevance %}
+            <li class="article-item">
+                <div class="article-score">{{ article.relevance_score }}</div>
+                <div class="article-content">
+                    <a href="{{ article.url }}" target="_blank" class="article-title">{{ article.title }}</a>
+                    <div class="article-meta">
+                        {{ article.source }} · {{ article.category }}
+                    </div>
+                </div>
+                <div class="article-actions">
+                    <form method="POST" action="{{ url_for('bulk_update') }}" style="display:inline;">
+                        <input type="hidden" name="link_ids" value="{{ article.id }}">
+                        <button type="submit" name="action" value="saved" class="btn btn-sm btn-secondary">Save</button>
+                    </form>
+                </div>
+            </li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <p class="empty-state">No high-relevance articles. <a href="{{ url_for('scrape_page') }}">Run the scraper</a> to find content.</p>
+        {% endif %}
+    </div>
+
+    <!-- Recent Benchmarks -->
+    <div class="card full-width">
+        <div class="card-header">
+            <h2>Recent Benchmark Runs</h2>
+            <a href="{{ url_for('benchmark_page') }}" class="btn btn-sm">View All</a>
+        </div>
+        {% if recent_benchmarks %}
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Run ID</th>
+                    <th>Date</th>
+                    <th>Status</th>
+                    <th>Models</th>
+                    <th>Calls</th>
+                    <th>Cost</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for run in recent_benchmarks %}
+                <tr>
+                    <td><code>{{ run.run_id }}</code></td>
+                    <td>{{ run.run_date.strftime('%Y-%m-%d %H:%M') if run.run_date else 'N/A' }}</td>
+                    <td><span class="status-badge {{ run.status }}">{{ run.status }}</span></td>
+                    <td>{{ run.models_tested }}</td>
+                    <td>{{ run.total_calls }}</td>
+                    <td>${{ "%.2f"|format(run.total_cost) }}</td>
+                    <td>
+                        <a href="{{ url_for('benchmark_results', run_id=run.run_id) }}" class="btn btn-sm">View</a>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p class="empty-state">No benchmark runs yet. <a href="{{ url_for('benchmark_page') }}">Run your first benchmark</a>.</p>
+        {% endif %}
+    </div>
+</div>
+
+<style>
+.dashboard-header {
+    text-align: center;
+    padding: 24px 0;
+    margin-bottom: 24px;
+    border-bottom: 3px solid var(--gold);
+}
+.dashboard-header h1 {
+    font-size: 32px;
+    margin: 0;
+}
+.dashboard-header .tagline {
+    color: #666;
+    font-style: italic;
+    margin: 8px 0 0;
+}
+.dashboard-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 24px;
+}
+.full-width {
+    grid-column: 1 / -1;
+}
+.stats-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+    margin-top: 16px;
+}
+.stat-item {
+    text-align: center;
+    padding: 16px;
+    background: #f9f9f9;
+    border-radius: 8px;
+    text-decoration: none;
+    color: inherit;
+    transition: background 0.2s;
+}
+.stat-item:hover {
+    background: #f0f0f0;
+}
+.stat-value {
+    font-size: 32px;
+    font-weight: 700;
+    color: var(--gold);
+}
+.stat-label {
+    font-size: 14px;
+    color: #666;
+    margin-top: 4px;
+}
+.action-buttons {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-top: 16px;
+}
+.btn-large {
+    padding: 16px 24px;
+    font-size: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+}
+.btn-gold {
+    background: var(--gold);
+    color: white;
+}
+.btn-gold:hover {
+    background: #b8911f;
+}
+.card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16px;
+}
+.card-header h2 {
+    margin: 0;
+}
+.article-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+.article-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 16px;
+    padding: 12px 0;
+    border-bottom: 1px solid #eee;
+}
+.article-item:last-child {
+    border-bottom: none;
+}
+.article-score {
+    background: var(--gold);
+    color: white;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-weight: 600;
+    font-size: 14px;
+    min-width: 32px;
+    text-align: center;
+}
+.article-content {
+    flex: 1;
+}
+.article-title {
+    font-weight: 600;
+    color: #1a1a1a;
+    text-decoration: none;
+}
+.article-title:hover {
+    color: var(--gold);
+}
+.article-meta {
+    font-size: 13px;
+    color: #666;
+    margin-top: 4px;
+}
+.empty-state {
+    text-align: center;
+    color: #666;
+    padding: 24px;
+}
+.data-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+.data-table th, .data-table td {
+    padding: 12px;
+    text-align: left;
+    border-bottom: 1px solid #eee;
+}
+.data-table th {
+    font-weight: 600;
+    color: #666;
+    font-size: 13px;
+}
+.status-badge {
+    display: inline-block;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: 600;
+}
+.status-badge.completed { background: #d4edda; color: #155724; }
+.status-badge.pending { background: #fff3cd; color: #856404; }
+.status-badge.running { background: #cce5ff; color: #004085; }
+.status-badge.failed { background: #f8d7da; color: #721c24; }
+
+@media (max-width: 768px) {
+    .dashboard-grid {
+        grid-template-columns: 1fr;
+    }
+    .stats-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}
+</style>
+{% endblock %}

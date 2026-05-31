@@ -1,0 +1,295 @@
+{% extends "base.html" %}
+
+{% block title %}Benchmark Results: {{ run.run_id }} — Token Trader Admin{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Benchmark Results</h1>
+    <a href="{{ url_for('benchmark_page') }}" class="btn btn-secondary">Back to Benchmarks</a>
+</div>
+
+<div class="results-grid">
+    <div class="card run-info">
+        <h2>Run Information</h2>
+        <div class="info-grid">
+            <div class="info-item">
+                <span class="label">Run ID</span>
+                <code>{{ run.run_id }}</code>
+            </div>
+            <div class="info-item">
+                <span class="label">Date</span>
+                <span>{{ run.run_date.strftime('%Y-%m-%d %H:%M') if run.run_date else 'N/A' }}</span>
+            </div>
+            <div class="info-item">
+                <span class="label">Status</span>
+                <span class="status-badge status-{{ run.status }}">{{ run.status }}</span>
+            </div>
+            <div class="info-item">
+                <span class="label">Models Tested</span>
+                <span>{{ run.models_tested }}</span>
+            </div>
+            <div class="info-item">
+                <span class="label">Total Calls</span>
+                <span>{{ run.total_calls }}</span>
+            </div>
+            <div class="info-item">
+                <span class="label">Total Cost</span>
+                <span class="cost">${{ "%.4f"|format(run.total_cost) }}</span>
+            </div>
+        </div>
+    </div>
+
+    {% if results.rankings and results.rankings.combined %}
+    <div class="card">
+        <h2>Combined Rankings (Inference Price Index)</h2>
+        <p class="card-subtitle">Overall cost-efficiency across all task types</p>
+        <table class="results-table">
+            <thead>
+                <tr>
+                    <th>Rank</th>
+                    <th>Model</th>
+                    <th>Tier</th>
+                    <th>Cost/Completion</th>
+                    <th>Pass Rate</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for model in results.rankings.combined.rankings %}
+                <tr class="{{ 'highlight' if loop.index == 1 else '' }}">
+                    <td class="rank">{{ model.rank }}</td>
+                    <td class="model-name">{{ model.model_id }}</td>
+                    <td><span class="tier-badge tier-{{ model.tier }}">{{ model.tier }}</span></td>
+                    <td class="cost">${{ "%.6f"|format(model.combined_cost) }}</td>
+                    <td>{{ "%.1f"|format(model.avg_pass_rate * 100) }}%</td>
+                    <td>
+                        {% if model.meets_bar %}
+                        <span class="status-badge status-completed">Meets Bar</span>
+                        {% else %}
+                        <span class="status-badge status-failed">Below Bar</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% if results.rankings.combined.summary %}
+        <div class="summary-box">
+            <strong>Best Overall:</strong> {{ results.rankings.combined.summary.best_overall }}
+            at ${{ "%.6f"|format(results.rankings.combined.summary.best_cost) }} per completion
+        </div>
+        {% endif %}
+    </div>
+    {% endif %}
+
+    {% if results.rankings and results.rankings.archetypes %}
+    {% for archetype, data in results.rankings.archetypes.items() %}
+    <div class="card">
+        <h2>{{ archetype|title }} Task Rankings</h2>
+        <table class="results-table">
+            <thead>
+                <tr>
+                    <th>Rank</th>
+                    <th>Model</th>
+                    <th>Tier</th>
+                    <th>Cost/Completion</th>
+                    <th>Pass Rate</th>
+                    <th>Mean Latency</th>
+                    <th>Samples</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for model in data.rankings %}
+                <tr class="{{ 'highlight' if loop.index == 1 else '' }}">
+                    <td class="rank">{{ model.rank }}</td>
+                    <td class="model-name">{{ model.model_id }}</td>
+                    <td><span class="tier-badge tier-{{ model.tier }}">{{ model.tier }}</span></td>
+                    <td class="cost">${{ "%.6f"|format(model.cost_per_completion) }}</td>
+                    <td>{{ "%.1f"|format(model.pass_rate * 100) }}%</td>
+                    <td>{{ "%.0f"|format(model.mean_latency_ms) }}ms</td>
+                    <td>{{ model.sample_size }} ({{ model.passes }}/{{ model.failures }})</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% if data.summary %}
+        <div class="summary-box">
+            <strong>Best:</strong> {{ data.summary.best_model }} (${{ "%.6f"|format(data.summary.best_cost) }})
+            &nbsp;|&nbsp;
+            <strong>Worst:</strong> {{ data.summary.worst_model }} (${{ "%.6f"|format(data.summary.worst_cost) }})
+            &nbsp;|&nbsp;
+            <strong>Cost Range:</strong> {{ "%.0f"|format((data.summary.worst_cost / data.summary.best_cost)) }}x
+        </div>
+        {% endif %}
+    </div>
+    {% endfor %}
+    {% endif %}
+
+    {% if results.anomalies %}
+    <div class="card">
+        <h2>Anomalies & Insights</h2>
+        <div class="anomalies-list">
+            {% for anomaly in results.anomalies %}
+            <div class="anomaly-item severity-{{ anomaly.severity }}">
+                <span class="anomaly-type">{{ anomaly.type|replace('_', ' ')|title }}</span>
+                <span class="anomaly-desc">{{ anomaly.description }}</span>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+</div>
+
+<style>
+.results-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+}
+.run-info .info-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 16px;
+}
+.info-item {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.info-item .label {
+    font-size: 12px;
+    color: #666;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+.info-item code {
+    font-size: 14px;
+    background: #f5f5f5;
+    padding: 4px 8px;
+    border-radius: 4px;
+}
+.card-subtitle {
+    color: #666;
+    font-size: 14px;
+    margin: -8px 0 16px;
+}
+.results-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+}
+.results-table th {
+    text-align: left;
+    padding: 12px 8px;
+    border-bottom: 2px solid #eee;
+    font-weight: 600;
+    color: #333;
+}
+.results-table td {
+    padding: 12px 8px;
+    border-bottom: 1px solid #f0f0f0;
+}
+.results-table tr.highlight {
+    background: linear-gradient(90deg, rgba(201, 162, 39, 0.1) 0%, transparent 100%);
+}
+.results-table tr.highlight td:first-child {
+    border-left: 3px solid var(--gold);
+}
+.rank {
+    font-weight: 700;
+    color: var(--gold);
+    font-size: 16px;
+}
+.model-name {
+    font-family: 'Monaco', 'Menlo', monospace;
+    font-size: 13px;
+}
+.cost {
+    font-family: 'Monaco', 'Menlo', monospace;
+    color: #16a34a;
+    font-weight: 600;
+}
+.tier-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+.tier-cheap {
+    background: #dcfce7;
+    color: #166534;
+}
+.tier-mid {
+    background: #fef3c7;
+    color: #92400e;
+}
+.tier-frontier {
+    background: #dbeafe;
+    color: #1e40af;
+}
+.status-badge {
+    display: inline-block;
+    padding: 4px 10px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 500;
+}
+.status-completed {
+    background: #dcfce7;
+    color: #166534;
+}
+.status-pending {
+    background: #fef3c7;
+    color: #92400e;
+}
+.status-failed {
+    background: #fee2e2;
+    color: #991b1b;
+}
+.summary-box {
+    margin-top: 16px;
+    padding: 12px 16px;
+    background: #f9fafb;
+    border-radius: 6px;
+    font-size: 14px;
+    border-left: 3px solid var(--gold);
+}
+.anomalies-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.anomaly-item {
+    display: flex;
+    gap: 12px;
+    padding: 10px 12px;
+    background: #f9fafb;
+    border-radius: 6px;
+    font-size: 13px;
+    align-items: center;
+}
+.anomaly-item.severity-low {
+    border-left: 3px solid #fbbf24;
+}
+.anomaly-item.severity-medium {
+    border-left: 3px solid #f97316;
+}
+.anomaly-item.severity-high {
+    border-left: 3px solid #ef4444;
+}
+.anomaly-type {
+    background: #e5e7eb;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-weight: 600;
+    font-size: 11px;
+    text-transform: uppercase;
+    white-space: nowrap;
+}
+.anomaly-desc {
+    color: #4b5563;
+}
+</style>
+{% endblock %}

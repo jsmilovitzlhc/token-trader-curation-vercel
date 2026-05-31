@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+
+{% block title %}Newsletter Preview — Token Trader Admin{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Newsletter Preview</h1>
+    <div style="display: flex; gap: 12px;">
+        <button onclick="copyToClipboard()" class="btn btn-primary">Copy HTML</button>
+        <a href="{{ url_for('compose_newsletter', issue=issue) }}" class="btn btn-secondary">Back to Compose</a>
+    </div>
+</div>
+
+<div class="preview-container">
+    <div class="preview-frame">
+        {{ html | safe }}
+    </div>
+</div>
+
+<div class="card" style="margin-top: 24px;">
+    <h2>Raw HTML</h2>
+    <pre id="raw-html"><code>{{ html | e }}</code></pre>
+</div>
+
+<style>
+.preview-container {
+    background: #e0e0e0;
+    padding: 24px;
+    border-radius: 8px;
+}
+.preview-frame {
+    background: white;
+    max-width: 650px;
+    margin: 0 auto;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+}
+</style>
+
+<script>
+function copyToClipboard() {
+    const html = document.querySelector('.preview-frame').innerHTML;
+    navigator.clipboard.writeText(html).then(() => {
+        alert('HTML copied to clipboard!');
+    });
+}
+</script>
+{% endblock %}

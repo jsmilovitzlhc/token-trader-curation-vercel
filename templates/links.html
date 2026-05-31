@@ -1,0 +1,228 @@
+{% extends "base.html" %}
+
+{% block title %}Links — Token Trader Admin{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Links</h1>
+    <a href="{{ url_for('add_link') }}" class="btn btn-primary">+ Add Link</a>
+</div>
+
+<div class="stats-bar">
+    {% for status in statuses %}
+    <a href="{{ url_for('links', status=status) }}" class="stat-chip {{ 'active' if filters.status == status else '' }}">
+        {{ status|title }}: {{ counts[status] }}
+    </a>
+    {% endfor %}
+    <a href="{{ url_for('links') }}" class="stat-chip {{ 'active' if not filters.status else '' }}">All</a>
+</div>
+
+<form method="GET" class="filters-bar">
+    <select name="status" onchange="this.form.submit()">
+        <option value="">All Statuses</option>
+        {% for status in statuses %}
+        <option value="{{ status }}" {% if filters.status == status %}selected{% endif %}>{{ status|title }}</option>
+        {% endfor %}
+    </select>
+
+    <select name="category" onchange="this.form.submit()">
+        <option value="">All Categories</option>
+        {% for cat in categories %}
+        <option value="{{ cat }}" {% if filters.category == cat %}selected{% endif %}>{{ cat }}</option>
+        {% endfor %}
+    </select>
+
+    <select name="issue" onchange="this.form.submit()">
+        <option value="">All Issues</option>
+        {% for iss in issues %}
+        <option value="{{ iss }}" {% if filters.issue == iss %}selected{% endif %}>{{ iss }}</option>
+        {% endfor %}
+    </select>
+
+    <select name="min_relevance" onchange="this.form.submit()">
+        <option value="">Any Relevance</option>
+        <option value="15" {% if filters.min_relevance == '15' %}selected{% endif %}>15+ (High)</option>
+        <option value="10" {% if filters.min_relevance == '10' %}selected{% endif %}>10+ (Medium)</option>
+        <option value="5" {% if filters.min_relevance == '5' %}selected{% endif %}>5+ (Low)</option>
+    </select>
+
+    {% if filters.status or filters.category or filters.issue or filters.min_relevance %}
+    <a href="{{ url_for('links') }}" class="btn btn-secondary btn-sm">Clear</a>
+    {% endif %}
+</form>
+
+<form method="POST" action="{{ url_for('bulk_update') }}" id="bulk-form">
+    <div class="bulk-actions">
+        <span>Bulk:</span>
+        <button type="submit" name="action" value="saved" class="btn btn-sm">→ Save</button>
+        <button type="submit" name="action" value="scheduled" class="btn btn-sm">→ Schedule</button>
+        <button type="submit" name="action" value="published" class="btn btn-sm">→ Publish</button>
+        <button type="submit" name="action" value="archived" class="btn btn-sm">→ Archive</button>
+        <button type="submit" name="action" value="delete" class="btn btn-sm btn-danger" onclick="return confirm('Delete selected?')">Delete</button>
+    </div>
+
+    <table class="links-table">
+        <thead>
+            <tr>
+                <th><input type="checkbox" id="select-all"></th>
+                <th>Score</th>
+                <th>Title</th>
+                <th>Source</th>
+                <th>Category</th>
+                <th>Status</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for link in links %}
+            <tr>
+                <td><input type="checkbox" name="link_ids" value="{{ link.id }}"></td>
+                <td>
+                    <span class="relevance-badge {% if link.relevance_score >= 15 %}high{% elif link.relevance_score >= 10 %}medium{% else %}low{% endif %}">
+                        {{ link.relevance_score }}
+                    </span>
+                </td>
+                <td>
+                    <a href="{{ link.url }}" target="_blank" class="link-title">{{ link.title or link.url }}</a>
+                    {% if link.notes %}
+                    <div class="link-notes">{{ link.notes }}</div>
+                    {% endif %}
+                </td>
+                <td>{{ link.source }}</td>
+                <td><span class="category-badge">{{ link.category }}</span></td>
+                <td><span class="status-badge {{ link.status }}">{{ link.status }}</span></td>
+                <td>
+                    <a href="{{ url_for('edit_link', link_id=link.id) }}" class="btn btn-sm">Edit</a>
+                </td>
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="7" class="empty-state">No links found. <a href="{{ url_for('add_link') }}">Add one</a> or <a href="{{ url_for('scrape_page') }}">run the scraper</a>.</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</form>
+
+<style>
+.page-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+}
+.stats-bar {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+}
+.stat-chip {
+    padding: 6px 12px;
+    background: #f0f0f0;
+    border-radius: 20px;
+    font-size: 13px;
+    text-decoration: none;
+    color: #333;
+}
+.stat-chip.active {
+    background: var(--gold);
+    color: white;
+}
+.filters-bar {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+}
+.filters-bar select {
+    padding: 8px 12px;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+}
+.bulk-actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    padding: 12px;
+    background: #f9f9f9;
+    border-radius: 8px 8px 0 0;
+    border: 1px solid #eee;
+    border-bottom: none;
+}
+.bulk-actions span {
+    font-size: 13px;
+    color: #666;
+}
+.links-table {
+    width: 100%;
+    border-collapse: collapse;
+    background: white;
+    border: 1px solid #eee;
+    border-radius: 0 0 8px 8px;
+}
+.links-table th, .links-table td {
+    padding: 12px;
+    text-align: left;
+    border-bottom: 1px solid #eee;
+}
+.links-table th {
+    background: #f9f9f9;
+    font-weight: 600;
+    font-size: 13px;
+    color: #666;
+}
+.link-title {
+    font-weight: 500;
+    color: #1a1a1a;
+    text-decoration: none;
+}
+.link-title:hover {
+    color: var(--gold);
+}
+.link-notes {
+    font-size: 12px;
+    color: #666;
+    font-style: italic;
+    margin-top: 4px;
+}
+.relevance-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 600;
+}
+.relevance-badge.high { background: #d4edda; color: #155724; }
+.relevance-badge.medium { background: #fff3cd; color: #856404; }
+.relevance-badge.low { background: #f0f0f0; color: #666; }
+.category-badge {
+    font-size: 12px;
+    color: #666;
+}
+.status-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+.status-badge.scraped { background: #e0e0e0; color: #666; }
+.status-badge.saved { background: #cce5ff; color: #004085; }
+.status-badge.scheduled { background: #fff3cd; color: #856404; }
+.status-badge.published { background: #d4edda; color: #155724; }
+.status-badge.archived { background: #f0f0f0; color: #999; }
+.empty-state {
+    text-align: center;
+    padding: 40px;
+    color: #666;
+}
+</style>
+
+<script>
+document.getElementById('select-all').addEventListener('change', function() {
+    document.querySelectorAll('input[name="link_ids"]').forEach(cb => cb.checked = this.checked);
+});
+</script>
+{% endblock %}
