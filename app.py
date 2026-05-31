@@ -141,24 +141,46 @@ def init_default_sources():
         return
 
     # Default RSS feeds and search queries for Token Trader
+    # Based on Value Chain: Power → GPU Silicon → GPU Rental → Derivatives → Model → Inference → Apps
     default_sources = [
-        # RSS Feeds
+        # RSS Feeds - General AI/Tech
         ('TechCrunch AI', 'rss', 'https://techcrunch.com/tag/artificial-intelligence/feed/', '', 'Model Economics'),
         ('Ars Technica Tech', 'rss', 'https://feeds.arstechnica.com/arstechnica/technology-lab', '', 'Other'),
         ('The Verge AI', 'rss', 'https://www.theverge.com/rss/ai-artificial-intelligence/index.xml', '', 'Model Economics'),
-        ('Reuters Tech', 'rss', 'https://www.reutersagency.com/feed/?taxonomy=best-topics&post_type=best&best-type=reuters-best-technology', '', 'Market Analysis'),
-        ('Hacker News', 'rss', 'https://hnrss.org/newest?q=GPU+OR+inference+OR+NVIDIA+OR+OpenAI', '', 'Other'),
+        ('Hacker News AI', 'rss', 'https://hnrss.org/newest?q=GPU+OR+inference+OR+NVIDIA+OR+OpenAI+OR+Anthropic', '', 'Other'),
 
-        # Google News searches for Token Trader topics
-        ('CME Compute Futures', 'google_news', '', 'CME compute futures GPU', 'Compute Futures'),
-        ('GPU Pricing News', 'google_news', '', 'GPU pricing NVIDIA H100 rental', 'GPU Markets'),
-        ('AI Inference Pricing', 'google_news', '', 'AI inference pricing tokens API', 'Inference Pricing'),
-        ('Data Center AI', 'google_news', '', 'data center AI infrastructure', 'Data Centers'),
-        ('OpenAI Anthropic Pricing', 'google_news', '', 'OpenAI Anthropic Google AI pricing', 'Inference Pricing'),
-        ('Cloud AI Providers', 'google_news', '', 'AWS Azure Google Cloud AI compute', 'Cloud Providers'),
-        ('AI Chip Supply', 'google_news', '', 'NVIDIA AMD Intel AI chips supply', 'Chip Supply Chain'),
-        ('Compute Marketplace', 'google_news', '', 'CoreWeave Lambda Labs Together AI', 'Cloud Providers'),
-        ('AI Regulation', 'google_news', '', 'AI regulation CFTC compute commodity', 'Regulatory'),
+        # VALUE CHAIN LINK 1: Power / Electricity
+        ('Power Grid Energy', 'google_news', '', 'PJM electricity data center power grid', 'Data Centers'),
+        ('Data Center Power', 'google_news', '', 'data center electricity costs power consumption AI', 'Data Centers'),
+
+        # VALUE CHAIN LINK 2: GPU Silicon (Nvidia)
+        ('Nvidia Earnings', 'google_news', '', 'NVIDIA earnings data center revenue GPU', 'GPU Markets'),
+        ('Nvidia H100 H200', 'google_news', '', 'NVIDIA H100 H200 B100 Blackwell GPU', 'GPU Markets'),
+        ('AI Chip Competition', 'google_news', '', 'NVIDIA AMD Intel AI chip competition', 'Chip Supply Chain'),
+
+        # VALUE CHAIN LINK 3: GPU Rental / Compute Markets
+        ('GPU Rental Pricing', 'google_news', '', 'GPU rental pricing H100 cloud compute', 'GPU Markets'),
+        ('CoreWeave Lambda', 'google_news', '', 'CoreWeave Lambda Labs Together AI GPU', 'Cloud Providers'),
+        ('Silicon Data OCPI', 'google_news', '', 'Silicon Data compute index OCPI GPU', 'GPU Markets'),
+
+        # VALUE CHAIN LINK 4: Compute Derivatives / Futures
+        ('CME Compute Futures', 'google_news', '', 'CME compute futures GPU derivatives', 'Compute Futures'),
+        ('ICE GPU Futures', 'google_news', '', 'ICE GPU futures compute commodity', 'Compute Futures'),
+        ('Compute Commodity', 'google_news', '', 'compute commodity trading futures market', 'Compute Futures'),
+
+        # VALUE CHAIN LINK 5/6: Model Layer & Inference Pricing
+        ('OpenAI Pricing', 'google_news', '', 'OpenAI GPT pricing API tokens cost', 'Inference Pricing'),
+        ('Anthropic Claude', 'google_news', '', 'Anthropic Claude pricing API inference', 'Inference Pricing'),
+        ('Google Gemini', 'google_news', '', 'Google Gemini AI pricing API', 'Inference Pricing'),
+        ('AI Model Releases', 'google_news', '', 'OpenAI Anthropic Google AI model release announcement', 'Model Economics'),
+
+        # VALUE CHAIN LINK 7: Application Layer
+        ('Enterprise AI Apps', 'google_news', '', 'enterprise AI application pricing subscription', 'Enterprise AI'),
+        ('AI SaaS Pricing', 'google_news', '', 'AI SaaS pricing per seat subscription', 'Enterprise AI'),
+
+        # Regulatory & Market Analysis
+        ('AI Regulation CFTC', 'google_news', '', 'AI regulation CFTC compute commodity trading', 'Regulatory'),
+        ('AI Market Analysis', 'google_news', '', 'AI inference market analysis forecast', 'Market Analysis'),
     ]
 
     for name, source_type, url, keywords, category in default_sources:
