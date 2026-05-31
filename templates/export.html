@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+
+{% block title %}Export — Token Trader Curation{% endblock %}
+
+{% block content %}
+<div class="card">
+    <h2 style="margin-bottom: 20px;">Export Links for Newsletter</h2>
+
+    <form method="GET" class="filters" style="margin-bottom: 24px;">
+        <select name="issue">
+            <option value="">All Scheduled Links</option>
+            <!-- Issues would be populated dynamically -->
+        </select>
+
+        <select name="format">
+            <option value="markdown" {% if format == 'markdown' %}selected{% endif %}>Markdown</option>
+            <option value="html" {% if format == 'html' %}selected{% endif %}>HTML (Beehiiv-ready)</option>
+            <option value="json" {% if format == 'json' %}selected{% endif %}>JSON</option>
+        </select>
+
+        <button type="submit" class="btn btn-primary">Generate Export</button>
+    </form>
+
+    {% if output %}
+    <div style="margin-bottom: 16px;">
+        <button onclick="copyToClipboard()" class="btn btn-secondary">Copy to Clipboard</button>
+    </div>
+
+    {% if format == 'markdown' %}
+    <pre id="export-output">{{ output }}</pre>
+    {% elif format == 'html' %}
+    <pre id="export-output">{{ output | e }}</pre>
+    <h3 style="margin-top: 24px; margin-bottom: 12px;">Preview</h3>
+    <div class="export-preview">
+        {{ output | safe }}
+    </div>
+    {% endif %}
+    {% else %}
+    <p style="color: #666;">
+        Schedule links by setting their status to "Scheduled", then export them here.
+        <br><br>
+        Links will be grouped by category and sorted by priority.
+    </p>
+    {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function copyToClipboard() {
+    const text = document.getElementById('export-output').textContent;
+    navigator.clipboard.writeText(text).then(() => {
+        alert('Copied to clipboard!');
+    });
+}
+</script>
+{% endblock %}

@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+
+{% block title %}Links — Token Trader Curation{% endblock %}
+
+{% block content %}
+<div class="stats">
+    <div class="stat">
+        <div class="stat-value">{{ counts.saved }}</div>
+        <div class="stat-label">Saved</div>
+    </div>
+    <div class="stat">
+        <div class="stat-value">{{ counts.scheduled }}</div>
+        <div class="stat-label">Scheduled</div>
+    </div>
+    <div class="stat">
+        <div class="stat-value">{{ counts.published }}</div>
+        <div class="stat-label">Published</div>
+    </div>
+</div>
+
+<form method="GET" class="filters">
+    <select name="status" onchange="this.form.submit()">
+        <option value="">All Statuses</option>
+        {% for status in statuses %}
+        <option value="{{ status }}" {% if filters.status == status %}selected{% endif %}>{{ status|title }}</option>
+        {% endfor %}
+    </select>
+
+    <select name="category" onchange="this.form.submit()">
+        <option value="">All Categories</option>
+        {% for cat in categories %}
+        <option value="{{ cat }}" {% if filters.category == cat %}selected{% endif %}>{{ cat }}</option>
+        {% endfor %}
+    </select>
+
+    <select name="issue" onchange="this.form.submit()">
+        <option value="">All Issues</option>
+        {% for iss in issues %}
+        <option value="{{ iss }}" {% if filters.issue == iss %}selected{% endif %}>{{ iss }}</option>
+        {% endfor %}
+    </select>
+
+    {% if filters.status or filters.category or filters.issue %}
+    <a href="{{ url_for('index') }}" class="btn btn-secondary btn-sm">Clear Filters</a>
+    {% endif %}
+</form>
+
+<form method="POST" action="{{ url_for('bulk_update') }}" id="bulk-form">
+    <div class="bulk-actions">
+        <span style="font-size: 14px; color: #666;">Bulk Actions:</span>
+        <button type="submit" name="action" value="scheduled" class="btn btn-secondary btn-sm">→ Schedule</button>
+        <button type="submit" name="action" value="published" class="btn btn-secondary btn-sm">→ Published</button>
+        <button type="submit" name="action" value="archived" class="btn btn-secondary btn-sm">→ Archive</button>
+        <button type="submit" name="action" value="delete" class="btn btn-danger btn-sm" onclick="return confirm('Delete selected links?')">Delete</button>
+    </div>
+
+    <ul class="link-list">
+        {% for link in links %}
+        <li class="link-item">
+            <div class="link-checkbox">
+                <input type="checkbox" name="link_ids" value="{{ link.id }}">
+            </div>
+            <div class="link-content">
+                <div class="link-title">
+                    <a href="{{ link.url }}" target="_blank">{{ link.title or link.url }}</a>
+                </div>
+                <div class="link-meta">
+                    {% if link.source %}{{ link.source }}{% endif %}
+                    {% if link.author %} · {{ link.author }}{% endif %}
+                    · {{ link.created_at[:10] }}
+                    {% if link.issue %} · Issue: {{ link.issue }}{% endif %}
+                </div>
+                {% if link.description %}
+                <div class="link-description">{{ link.description[:200] }}{% if link.description|length > 200 %}...{% endif %}</div>
+                {% endif %}
+                {% if link.notes %}
+                <div class="link-notes">{{ link.notes }}</div>
+                {% endif %}
+                <div class="link-tags">
+                    <span class="tag tag-category">{{ link.category }}</span>
+                    <span class="tag tag-status {{ link.status }}">{{ link.status }}</span>
+                    {% if link.priority > 0 %}<span class="tag">★ Priority</span>{% endif %}
+                </div>
+            </div>
+            <div class="link-actions">
+                <a href="{{ url_for('edit_link', link_id=link.id) }}" class="btn btn-secondary btn-sm">Edit</a>
+            </div>
+        </li>
+        {% else %}
+        <li class="card" style="text-align: center; color: #666;">
+            No links found. <a href="{{ url_for('add_link') }}">Add your first link</a>
+        </li>
+        {% endfor %}
+    </ul>
+</form>
+{% endblock %}
