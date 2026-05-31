@@ -157,10 +157,14 @@
 
 {% block scripts %}
 <script>
-document.getElementById('selectAll').addEventListener('change', function() {
-    const checkboxes = document.querySelectorAll('.article-checkbox');
-    checkboxes.forEach(cb => cb.checked = this.checked);
-});
+// Only attach selectAll listener if element exists
+const selectAllEl = document.getElementById('selectAll');
+if (selectAllEl) {
+    selectAllEl.addEventListener('change', function() {
+        const checkboxes = document.querySelectorAll('.article-checkbox');
+        checkboxes.forEach(cb => cb.checked = this.checked);
+    });
+}
 
 document.getElementById('runScrape').addEventListener('click', async function() {
     const btn = this;
