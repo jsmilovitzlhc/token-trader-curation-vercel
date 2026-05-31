@@ -3,10 +3,16 @@
 {% block title %}Scrape Articles - Token Trader{% endblock %}
 
 {% block content %}
-<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px;">
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
     <h2>Article Scraper</h2>
     <button id="runScrape" class="btn btn-primary">Run Scraper Now</button>
 </div>
+<p style="color: #666; font-size: 14px; margin-bottom: 24px;">
+    Fetches articles from the last 4 days. Scored by relevance to Token Trader topics:
+    <span style="background: #22c55e; color: white; padding: 1px 6px; border-radius: 8px; font-size: 11px;">15+</span> high value,
+    <span style="background: #f59e0b; color: white; padding: 1px 6px; border-radius: 8px; font-size: 11px;">5-14</span> relevant,
+    <span style="background: #9ca3af; color: white; padding: 1px 6px; border-radius: 8px; font-size: 11px;">0-4</span> low fit.
+</p>
 
 <div class="stats">
     <div class="stat">
@@ -123,6 +129,19 @@
                 <div class="link-content">
                     <div class="link-title">
                         <a href="{{ link.url }}" target="_blank">{{ link.title or 'No title' }}</a>
+                        {% if link.relevance_score and link.relevance_score >= 15 %}
+                        <span style="background: #22c55e; color: white; padding: 2px 8px; border-radius: 10px; font-size: 11px; margin-left: 8px;">
+                            Score: {{ link.relevance_score }}
+                        </span>
+                        {% elif link.relevance_score and link.relevance_score >= 5 %}
+                        <span style="background: #f59e0b; color: white; padding: 2px 8px; border-radius: 10px; font-size: 11px; margin-left: 8px;">
+                            Score: {{ link.relevance_score }}
+                        </span>
+                        {% elif link.relevance_score %}
+                        <span style="background: #9ca3af; color: white; padding: 2px 8px; border-radius: 10px; font-size: 11px; margin-left: 8px;">
+                            Score: {{ link.relevance_score }}
+                        </span>
+                        {% endif %}
                     </div>
                     <div class="link-meta">
                         {{ link.source }}
@@ -134,6 +153,9 @@
                     {% endif %}
                     <div class="link-tags">
                         <span class="tag tag-category">{{ link.category }}</span>
+                        {% if link.priority == 1 %}
+                        <span class="tag" style="background: #c9a227; color: white;">High Priority</span>
+                        {% endif %}
                     </div>
                 </div>
                 <div class="link-actions">
@@ -186,7 +208,12 @@ document.getElementById('runScrape').addEventListener('click', async function() 
             resultDiv.style.background = '#f0fdf4';
             resultDiv.style.color = '#166534';
             resultDiv.style.border = '1px solid #bbf7d0';
-            resultDiv.textContent = `Found ${data.new_articles} new articles!`;
+
+            let msg = `Found ${data.new_articles} relevant articles`;
+            if (data.skipped_old > 0 || data.skipped_low_score > 0) {
+                msg += ` (filtered: ${data.skipped_old || 0} old, ${data.skipped_low_score || 0} low relevance)`;
+            }
+            resultDiv.textContent = msg;
             resultDiv.style.display = 'block';
 
             if (data.new_articles > 0) {

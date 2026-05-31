@@ -119,6 +119,7 @@ def init_db():
     try:
         cur.execute("ALTER TABLE links ADD COLUMN IF NOT EXISTS scraped_from TEXT DEFAULT ''")
         cur.execute("ALTER TABLE links ADD COLUMN IF NOT EXISTS published_date TEXT DEFAULT ''")
+        cur.execute("ALTER TABLE links ADD COLUMN IF NOT EXISTS relevance_score INTEGER DEFAULT 0")
     except:
         pass
 
@@ -196,6 +197,106 @@ def init_default_sources():
     cur.close()
 
 
+# Relevance scoring keywords - aligned with Token Trader value chain
+# Tier 1: Direct value chain (10 points each)
+TIER1_KEYWORDS = [
+    'inference pricing', 'token pricing', 'api pricing', 'price per token',
+    'compute futures', 'cme compute', 'ice gpu', 'gpu futures', 'compute derivatives',
+    'gpu rental', 'h100 pricing', 'compute marketplace', 'gpu-hour',
+    'silicon data', 'ocpi', 'compute index',
+    'nvidia earnings', 'data center revenue', 'nvidia revenue',
+]
+
+# Tier 2: High relevance market context (5 points each)
+TIER2_KEYWORDS = [
+    'openai pricing', 'anthropic pricing', 'claude pricing', 'gpt pricing', 'gemini pricing',
+    'coreweave', 'lambda labs', 'together ai', 'replicate',
+    'gpu shortage', 'compute capacity', 'gpu availability',
+    'data center power', 'power consumption', 'electricity cost',
+    'cftc', 'commodity regulation', 'compute commodity',
+    'inference cost', 'training cost', 'model economics',
+]
+
+# Tier 3: Supply chain context (2 points each)
+TIER3_KEYWORDS = [
+    'nvidia', 'amd', 'intel', 'h100', 'h200', 'b100', 'blackwell', 'hopper',
+    'openai', 'anthropic', 'google ai', 'meta ai', 'mistral',
+    'aws', 'azure', 'google cloud', 'gcp',
+    'ai infrastructure', 'gpu cluster', 'ai chip',
+    'model release', 'frontier model', 'llm',
+]
+
+
+def calculate_relevance_score(title, description=''):
+    """Calculate relevance score for Token Trader audience (0-100)."""
+    text = f"{title} {description}".lower()
+    score = 0
+
+    # Check Tier 1 keywords (highest value)
+    for keyword in TIER1_KEYWORDS:
+        if keyword in text:
+            score += 10
+
+    # Check Tier 2 keywords
+    for keyword in TIER2_KEYWORDS:
+        if keyword in text:
+            score += 5
+
+    # Check Tier 3 keywords
+    for keyword in TIER3_KEYWORDS:
+        if keyword in text:
+            score += 2
+
+    # Cap at 100
+    return min(score, 100)
+
+
+def parse_article_date(date_str):
+    """Parse various date formats and return datetime object."""
+    if not date_str:
+        return None
+
+    # Common RSS date formats
+    formats = [
+        '%a, %d %b %Y %H:%M:%S %z',      # RFC 822: "Mon, 01 Jan 2024 12:00:00 +0000"
+        '%a, %d %b %Y %H:%M:%S %Z',      # With timezone name
+        '%Y-%m-%dT%H:%M:%S%z',           # ISO 8601
+        '%Y-%m-%dT%H:%M:%SZ',            # ISO 8601 UTC
+        '%Y-%m-%d %H:%M:%S',             # Simple datetime
+        '%Y-%m-%d',                       # Simple date
+    ]
+
+    # Clean up the date string
+    date_str = date_str.strip()
+    # Handle "GMT" timezone
+    date_str = date_str.replace(' GMT', ' +0000')
+
+    for fmt in formats:
+        try:
+            return datetime.strptime(date_str, fmt)
+        except ValueError:
+            continue
+
+    return None
+
+
+def is_recent_article(date_str, max_days=4):
+    """Check if article was published within max_days."""
+    if not date_str:
+        return True  # Include articles with no date (can't verify)
+
+    pub_date = parse_article_date(date_str)
+    if not pub_date:
+        return True  # Include if we can't parse the date
+
+    # Make pub_date timezone-naive for comparison
+    if pub_date.tzinfo:
+        pub_date = pub_date.replace(tzinfo=None)
+
+    cutoff = datetime.now() - timedelta(days=max_days)
+    return pub_date >= cutoff
+
+
 def parse_rss_feed(url):
     """Parse an RSS feed and return articles."""
     articles = []
@@ -251,11 +352,11 @@ def parse_rss_feed(url):
     return articles
 
 
-def search_google_news(keywords, days_back=7):
-    """Search Google News RSS for keywords."""
+def search_google_news(keywords, days_back=4):
+    """Search Google News RSS for keywords. Default 4 days for fast-moving markets."""
     articles = []
     try:
-        # Google News RSS search
+        # Google News RSS search - limit to recent articles
         encoded_query = quote_plus(keywords)
         url = f"https://news.google.com/rss/search?q={encoded_query}+when:{days_back}d&hl=en-US&gl=US&ceid=US:en"
 
@@ -291,8 +392,13 @@ def search_google_news(keywords, days_back=7):
     return articles
 
 
-def scrape_all_sources():
-    """Scrape all enabled sources and return new articles."""
+def scrape_all_sources(max_days=4, min_score=0):
+    """Scrape all enabled sources and return new articles.
+
+    Args:
+        max_days: Only include articles published within this many days
+        min_score: Minimum relevance score to include (0-100)
+    """
     db = get_db()
     cur = db.cursor()
 
@@ -300,13 +406,16 @@ def scrape_all_sources():
     sources = cur.fetchall()
 
     new_articles = []
+    skipped_old = 0
+    skipped_low_score = 0
+
     for source in sources:
         articles = []
 
         if source['source_type'] == 'rss' and source['url']:
             articles = parse_rss_feed(source['url'])
         elif source['source_type'] == 'google_news' and source['keywords']:
-            articles = search_google_news(source['keywords'])
+            articles = search_google_news(source['keywords'], days_back=max_days)
 
         for article in articles:
             # Check if URL already exists
@@ -314,24 +423,47 @@ def scrape_all_sources():
             if cur.fetchone():
                 continue
 
-            # Insert new article
+            # Filter by date - skip articles older than max_days
+            pub_date = article.get('published_date', '')
+            if not is_recent_article(pub_date, max_days=max_days):
+                skipped_old += 1
+                continue
+
+            # Calculate relevance score
+            title = article.get('title', '')
+            description = article.get('description', '')
+            relevance_score = calculate_relevance_score(title, description)
+
+            # Skip low-relevance articles
+            if relevance_score < min_score:
+                skipped_low_score += 1
+                continue
+
+            # Insert new article with relevance score
             try:
                 cur.execute('''
-                    INSERT INTO links (url, title, description, source, author, category, status, scraped_from, published_date)
-                    VALUES (%s, %s, %s, %s, %s, %s, 'scraped', %s, %s)
+                    INSERT INTO links (url, title, description, source, author, category, status, scraped_from, published_date, relevance_score, priority)
+                    VALUES (%s, %s, %s, %s, %s, %s, 'scraped', %s, %s, %s, %s)
                     RETURNING id
                 ''', (
                     article['url'],
-                    article.get('title', ''),
-                    article.get('description', ''),
+                    title,
+                    description,
                     article.get('source', source['name']),
                     article.get('author', ''),
                     source['category'],
                     source['name'],
-                    article.get('published_date', '')
+                    pub_date,
+                    relevance_score,
+                    1 if relevance_score >= 15 else 0  # Auto-prioritize high-relevance
                 ))
                 new_id = cur.fetchone()['id']
-                new_articles.append({**article, 'id': new_id, 'source_name': source['name']})
+                new_articles.append({
+                    **article,
+                    'id': new_id,
+                    'source_name': source['name'],
+                    'relevance_score': relevance_score
+                })
             except Exception as e:
                 print(f"Error inserting article: {e}")
                 db.rollback()
@@ -345,7 +477,16 @@ def scrape_all_sources():
 
     db.commit()
     cur.close()
-    return new_articles
+
+    # Sort by relevance score descending
+    new_articles.sort(key=lambda x: x.get('relevance_score', 0), reverse=True)
+
+    return {
+        'articles': new_articles,
+        'count': len(new_articles),
+        'skipped_old': skipped_old,
+        'skipped_low_score': skipped_low_score
+    }
 
 
 def publish_to_beehiiv(title, content_html, status='draft'):
@@ -739,11 +880,11 @@ def scrape_page():
     cur.execute("SELECT COUNT(*) as count FROM links WHERE status = 'scraped'")
     scraped_count = cur.fetchone()['count']
 
-    # Get recent scraped articles
+    # Get recent scraped articles - sorted by relevance score, then date
     cur.execute("""
         SELECT * FROM links
         WHERE status = 'scraped'
-        ORDER BY created_at DESC
+        ORDER BY relevance_score DESC, created_at DESC
         LIMIT 50
     """)
     recent_scraped = cur.fetchall()
@@ -761,11 +902,13 @@ def scrape_page():
 @require_auth
 def run_scrape():
     """Run scraping on all enabled sources."""
-    new_articles = scrape_all_sources()
+    result = scrape_all_sources(max_days=4, min_score=0)
     return jsonify({
         'success': True,
-        'new_articles': len(new_articles),
-        'articles': new_articles[:20]  # Return first 20 for display
+        'new_articles': result['count'],
+        'skipped_old': result['skipped_old'],
+        'skipped_low_score': result['skipped_low_score'],
+        'articles': result['articles'][:20]  # Return first 20 for display
     })
 
 
