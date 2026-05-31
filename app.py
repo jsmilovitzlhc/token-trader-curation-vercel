@@ -644,7 +644,15 @@ def run_scrape():
     db.commit()
     cur.close()
 
-    return redirect(url_for('links', status='scraped', min_relevance='15'))
+    # Store results in session for display
+    session['scrape_result'] = {
+        'total_found': len(all_articles),
+        'new_added': new_count,
+        'source_type': source_type
+    }
+
+    # Redirect to show ALL scraped articles (no min_relevance filter)
+    return redirect(url_for('links', status='scraped'))
 
 
 # ============================================================

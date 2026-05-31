@@ -8,6 +8,13 @@
     <a href="{{ url_for('add_link') }}" class="btn btn-primary">+ Add Link</a>
 </div>
 
+{% if session.get('scrape_result') %}
+<div class="alert alert-success" style="margin-bottom: 16px;">
+    Scrape complete: Found {{ session.scrape_result.total_found }} articles, added {{ session.scrape_result.new_added }} new.
+    {% if session.pop('scrape_result', None) %}{% endif %}
+</div>
+{% endif %}
+
 <div class="stats-bar">
     {% for status in statuses %}
     <a href="{{ url_for('links', status=status) }}" class="stat-chip {{ 'active' if filters.status == status else '' }}">
