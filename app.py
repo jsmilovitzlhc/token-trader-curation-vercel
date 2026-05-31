@@ -1,11 +1,11 @@
 """
-Token Trader Link Curation Tool
+Token Trader Admin Portal
 
-A simple web app for collecting and curating links for the newsletter.
-Features:
-- Manual link curation
-- Automated article scraping from RSS feeds and Google News
-- Beehiiv newsletter integration
+Unified admin for:
+- Article scraping and curation
+- Benchmark testing (Inference Price Index)
+- Newsletter composition
+
 Vercel + Postgres version.
 """
 
@@ -13,6 +13,7 @@ import os
 import re
 import json
 import requests
+import subprocess
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from functools import wraps
@@ -33,7 +34,7 @@ PASSWORD = os.environ.get('CURATION_PASSWORD', 'TOKENTRADER')
 BEEHIIV_API_KEY = os.environ.get('BEEHIIV_API_KEY', '')
 BEEHIIV_PUBLICATION_ID = os.environ.get('BEEHIIV_PUBLICATION_ID', '')
 
-# Categories for Token Trader
+# Categories aligned with Token Trader value chain
 CATEGORIES = [
     'Inference Pricing',
     'GPU Markets',
@@ -46,16 +47,64 @@ CATEGORIES = [
     'Compute Futures',
     'Data Centers',
     'Chip Supply Chain',
+    'Power & Energy',
     'Other',
 ]
 
 STATUSES = ['scraped', 'saved', 'scheduled', 'published', 'archived']
 
+# Relevance scoring keywords by tier
+RELEVANCE_KEYWORDS = {
+    # Tier 1 - Core value chain (10 points each)
+    'tier1': [
+        'inference pricing', 'inference cost', 'cost per token', 'price per token',
+        'compute futures', 'gpu rental', 'gpu leasing', 'ocpi',
+        'nvidia earnings', 'nvidia revenue', 'h100', 'h200', 'b100', 'b200',
+        'coreweave', 'lambda labs', 'together ai',
+    ],
+    # Tier 2 - Important context (5 points each)
+    'tier2': [
+        'openai pricing', 'anthropic pricing', 'google ai pricing', 'claude pricing',
+        'gpt-4 pricing', 'gemini pricing', 'api pricing',
+        'data center power', 'pjm', 'ercot', 'power purchase',
+        'cftc', 'commodity futures', 'derivatives',
+        'inference api', 'model serving', 'mlops',
+    ],
+    # Tier 3 - Related topics (2 points each)
+    'tier3': [
+        'nvidia', 'amd', 'intel', 'tpu', 'gpu',
+        'aws', 'azure', 'gcp', 'cloud compute',
+        'llm', 'large language model', 'foundation model',
+        'openai', 'anthropic', 'google ai', 'meta ai',
+        'enterprise ai', 'ai adoption',
+    ],
+}
+
+# RSS feed sources
+RSS_FEEDS = [
+    {'name': 'TechCrunch AI', 'url': 'https://techcrunch.com/category/artificial-intelligence/feed/', 'category': 'Enterprise AI'},
+    {'name': 'Ars Technica AI', 'url': 'https://feeds.arstechnica.com/arstechnica/technology-lab', 'category': 'Model Economics'},
+    {'name': 'The Verge AI', 'url': 'https://www.theverge.com/rss/ai-artificial-intelligence/index.xml', 'category': 'Enterprise AI'},
+    {'name': 'Hacker News', 'url': 'https://hnrss.org/newest?q=llm+OR+gpu+OR+inference', 'category': 'Other'},
+]
+
+# Google News search queries for value chain
+GOOGLE_NEWS_QUERIES = [
+    {'query': 'NVIDIA earnings GPU revenue', 'category': 'GPU Markets'},
+    {'query': 'H100 H200 pricing availability', 'category': 'GPU Markets'},
+    {'query': 'CoreWeave Lambda Labs GPU cloud', 'category': 'Cloud Providers'},
+    {'query': 'OpenAI API pricing tokens', 'category': 'Inference Pricing'},
+    {'query': 'Anthropic Claude pricing API', 'category': 'Inference Pricing'},
+    {'query': 'data center power PJM electricity', 'category': 'Power & Energy'},
+    {'query': 'AI compute futures derivatives', 'category': 'Compute Futures'},
+    {'query': 'enterprise AI adoption spending', 'category': 'Enterprise AI'},
+    {'query': 'LLM inference cost optimization', 'category': 'Model Economics'},
+]
+
 
 def get_db():
     """Get database connection."""
     if 'db' not in g:
-        # Handle Vercel's postgres:// vs postgresql:// URL format
         db_url = DATABASE_URL
         if db_url.startswith('postgres://'):
             db_url = db_url.replace('postgres://', 'postgresql://', 1)
@@ -77,7 +126,7 @@ def init_db():
     db = get_db()
     cur = db.cursor()
 
-    # Main links table
+    # Links table with scraping fields
     cur.execute('''
         CREATE TABLE IF NOT EXISTS links (
             id SERIAL PRIMARY KEY,
@@ -93,10 +142,27 @@ def init_db():
             status TEXT DEFAULT 'saved',
             issue TEXT DEFAULT '',
             priority INTEGER DEFAULT 0,
-            scraped_from TEXT DEFAULT '',
-            published_date TEXT DEFAULT '',
+            relevance_score INTEGER DEFAULT 0,
+            scraped_from TEXT,
+            published_date TIMESTAMP,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    # Benchmark runs table
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS benchmark_runs (
+            id SERIAL PRIMARY KEY,
+            run_id TEXT NOT NULL UNIQUE,
+            run_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            status TEXT DEFAULT 'pending',
+            models_tested INTEGER DEFAULT 0,
+            total_calls INTEGER DEFAULT 0,
+            total_cost DECIMAL(10, 4) DEFAULT 0,
+            results_json TEXT,
+            newsletter_md TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
 
@@ -110,416 +176,12 @@ def init_db():
             keywords TEXT,
             category TEXT DEFAULT 'Other',
             enabled BOOLEAN DEFAULT TRUE,
-            last_scraped TIMESTAMP,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            last_scraped TIMESTAMP
         )
     ''')
 
-    # Add new columns if they don't exist (for existing installations)
-    try:
-        cur.execute("ALTER TABLE links ADD COLUMN IF NOT EXISTS scraped_from TEXT DEFAULT ''")
-        cur.execute("ALTER TABLE links ADD COLUMN IF NOT EXISTS published_date TEXT DEFAULT ''")
-        cur.execute("ALTER TABLE links ADD COLUMN IF NOT EXISTS relevance_score INTEGER DEFAULT 0")
-    except:
-        pass
-
     db.commit()
     cur.close()
-
-    # Initialize default scrape sources
-    init_default_sources()
-
-
-def init_default_sources():
-    """Initialize default scrape sources for Token Trader topics."""
-    db = get_db()
-    cur = db.cursor()
-
-    # Check if sources already exist
-    cur.execute("SELECT COUNT(*) as count FROM scrape_sources")
-    if cur.fetchone()['count'] > 0:
-        cur.close()
-        return
-
-    # Default RSS feeds and search queries for Token Trader
-    # Based on Value Chain: Power → GPU Silicon → GPU Rental → Derivatives → Model → Inference → Apps
-    default_sources = [
-        # RSS Feeds - General AI/Tech
-        ('TechCrunch AI', 'rss', 'https://techcrunch.com/tag/artificial-intelligence/feed/', '', 'Model Economics'),
-        ('Ars Technica Tech', 'rss', 'https://feeds.arstechnica.com/arstechnica/technology-lab', '', 'Other'),
-        ('The Verge AI', 'rss', 'https://www.theverge.com/rss/ai-artificial-intelligence/index.xml', '', 'Model Economics'),
-        ('Hacker News AI', 'rss', 'https://hnrss.org/newest?q=GPU+OR+inference+OR+NVIDIA+OR+OpenAI+OR+Anthropic', '', 'Other'),
-
-        # VALUE CHAIN LINK 1: Power / Electricity
-        ('Power Grid Energy', 'google_news', '', 'PJM electricity data center power grid', 'Data Centers'),
-        ('Data Center Power', 'google_news', '', 'data center electricity costs power consumption AI', 'Data Centers'),
-
-        # VALUE CHAIN LINK 2: GPU Silicon (Nvidia)
-        ('Nvidia Earnings', 'google_news', '', 'NVIDIA earnings data center revenue GPU', 'GPU Markets'),
-        ('Nvidia H100 H200', 'google_news', '', 'NVIDIA H100 H200 B100 Blackwell GPU', 'GPU Markets'),
-        ('AI Chip Competition', 'google_news', '', 'NVIDIA AMD Intel AI chip competition', 'Chip Supply Chain'),
-
-        # VALUE CHAIN LINK 3: GPU Rental / Compute Markets
-        ('GPU Rental Pricing', 'google_news', '', 'GPU rental pricing H100 cloud compute', 'GPU Markets'),
-        ('CoreWeave Lambda', 'google_news', '', 'CoreWeave Lambda Labs Together AI GPU', 'Cloud Providers'),
-        ('Silicon Data OCPI', 'google_news', '', 'Silicon Data compute index OCPI GPU', 'GPU Markets'),
-
-        # VALUE CHAIN LINK 4: Compute Derivatives / Futures
-        ('CME Compute Futures', 'google_news', '', 'CME compute futures GPU derivatives', 'Compute Futures'),
-        ('ICE GPU Futures', 'google_news', '', 'ICE GPU futures compute commodity', 'Compute Futures'),
-        ('Compute Commodity', 'google_news', '', 'compute commodity trading futures market', 'Compute Futures'),
-
-        # VALUE CHAIN LINK 5/6: Model Layer & Inference Pricing
-        ('OpenAI Pricing', 'google_news', '', 'OpenAI GPT pricing API tokens cost', 'Inference Pricing'),
-        ('Anthropic Claude', 'google_news', '', 'Anthropic Claude pricing API inference', 'Inference Pricing'),
-        ('Google Gemini', 'google_news', '', 'Google Gemini AI pricing API', 'Inference Pricing'),
-        ('AI Model Releases', 'google_news', '', 'OpenAI Anthropic Google AI model release announcement', 'Model Economics'),
-
-        # VALUE CHAIN LINK 7: Application Layer
-        ('Enterprise AI Apps', 'google_news', '', 'enterprise AI application pricing subscription', 'Enterprise AI'),
-        ('AI SaaS Pricing', 'google_news', '', 'AI SaaS pricing per seat subscription', 'Enterprise AI'),
-
-        # Regulatory & Market Analysis
-        ('AI Regulation CFTC', 'google_news', '', 'AI regulation CFTC compute commodity trading', 'Regulatory'),
-        ('AI Market Analysis', 'google_news', '', 'AI inference market analysis forecast', 'Market Analysis'),
-    ]
-
-    for name, source_type, url, keywords, category in default_sources:
-        try:
-            cur.execute('''
-                INSERT INTO scrape_sources (name, source_type, url, keywords, category)
-                VALUES (%s, %s, %s, %s, %s)
-            ''', (name, source_type, url, keywords, category))
-        except:
-            pass
-
-    db.commit()
-    cur.close()
-
-
-# Relevance scoring keywords - aligned with Token Trader value chain
-# Tier 1: Direct value chain (10 points each)
-TIER1_KEYWORDS = [
-    'inference pricing', 'token pricing', 'api pricing', 'price per token',
-    'compute futures', 'cme compute', 'ice gpu', 'gpu futures', 'compute derivatives',
-    'gpu rental', 'h100 pricing', 'compute marketplace', 'gpu-hour',
-    'silicon data', 'ocpi', 'compute index',
-    'nvidia earnings', 'data center revenue', 'nvidia revenue',
-]
-
-# Tier 2: High relevance market context (5 points each)
-TIER2_KEYWORDS = [
-    'openai pricing', 'anthropic pricing', 'claude pricing', 'gpt pricing', 'gemini pricing',
-    'coreweave', 'lambda labs', 'together ai', 'replicate',
-    'gpu shortage', 'compute capacity', 'gpu availability',
-    'data center power', 'power consumption', 'electricity cost',
-    'cftc', 'commodity regulation', 'compute commodity',
-    'inference cost', 'training cost', 'model economics',
-]
-
-# Tier 3: Supply chain context (2 points each)
-TIER3_KEYWORDS = [
-    'nvidia', 'amd', 'intel', 'h100', 'h200', 'b100', 'blackwell', 'hopper',
-    'openai', 'anthropic', 'google ai', 'meta ai', 'mistral',
-    'aws', 'azure', 'google cloud', 'gcp',
-    'ai infrastructure', 'gpu cluster', 'ai chip',
-    'model release', 'frontier model', 'llm',
-]
-
-
-def calculate_relevance_score(title, description=''):
-    """Calculate relevance score for Token Trader audience (0-100)."""
-    text = f"{title} {description}".lower()
-    score = 0
-
-    # Check Tier 1 keywords (highest value)
-    for keyword in TIER1_KEYWORDS:
-        if keyword in text:
-            score += 10
-
-    # Check Tier 2 keywords
-    for keyword in TIER2_KEYWORDS:
-        if keyword in text:
-            score += 5
-
-    # Check Tier 3 keywords
-    for keyword in TIER3_KEYWORDS:
-        if keyword in text:
-            score += 2
-
-    # Cap at 100
-    return min(score, 100)
-
-
-def parse_article_date(date_str):
-    """Parse various date formats and return datetime object."""
-    if not date_str:
-        return None
-
-    # Common RSS date formats
-    formats = [
-        '%a, %d %b %Y %H:%M:%S %z',      # RFC 822: "Mon, 01 Jan 2024 12:00:00 +0000"
-        '%a, %d %b %Y %H:%M:%S %Z',      # With timezone name
-        '%Y-%m-%dT%H:%M:%S%z',           # ISO 8601
-        '%Y-%m-%dT%H:%M:%SZ',            # ISO 8601 UTC
-        '%Y-%m-%d %H:%M:%S',             # Simple datetime
-        '%Y-%m-%d',                       # Simple date
-    ]
-
-    # Clean up the date string
-    date_str = date_str.strip()
-    # Handle "GMT" timezone
-    date_str = date_str.replace(' GMT', ' +0000')
-
-    for fmt in formats:
-        try:
-            return datetime.strptime(date_str, fmt)
-        except ValueError:
-            continue
-
-    return None
-
-
-def is_recent_article(date_str, max_days=4):
-    """Check if article was published within max_days."""
-    if not date_str:
-        return True  # Include articles with no date (can't verify)
-
-    pub_date = parse_article_date(date_str)
-    if not pub_date:
-        return True  # Include if we can't parse the date
-
-    # Make pub_date timezone-naive for comparison
-    if pub_date.tzinfo:
-        pub_date = pub_date.replace(tzinfo=None)
-
-    cutoff = datetime.now() - timedelta(days=max_days)
-    return pub_date >= cutoff
-
-
-def parse_rss_feed(url):
-    """Parse an RSS feed and return articles."""
-    articles = []
-    try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
-        }
-        response = requests.get(url, headers=headers, timeout=15)
-        root = ET.fromstring(response.content)
-
-        # Handle different RSS formats
-        items = root.findall('.//item') or root.findall('.//{http://www.w3.org/2005/Atom}entry')
-
-        for item in items[:10]:  # Limit to 10 most recent
-            # Standard RSS
-            title = item.find('title')
-            link = item.find('link')
-            description = item.find('description')
-            pub_date = item.find('pubDate')
-            author = item.find('author') or item.find('{http://purl.org/dc/elements/1.1/}creator')
-
-            # Atom format fallback
-            if link is None:
-                link = item.find('{http://www.w3.org/2005/Atom}link')
-                if link is not None:
-                    link_href = link.get('href')
-                else:
-                    continue
-            else:
-                link_href = link.text
-
-            if title is None:
-                title = item.find('{http://www.w3.org/2005/Atom}title')
-
-            title_text = title.text if title is not None else ''
-            desc_text = description.text if description is not None else ''
-
-            # Clean HTML from description
-            if desc_text:
-                desc_text = re.sub(r'<[^>]+>', '', desc_text)
-                desc_text = unescape(desc_text)[:500]
-
-            articles.append({
-                'url': link_href,
-                'title': unescape(title_text) if title_text else '',
-                'description': desc_text,
-                'published_date': pub_date.text if pub_date is not None else '',
-                'author': author.text if author is not None else '',
-            })
-    except Exception as e:
-        print(f"Error parsing RSS feed {url}: {e}")
-
-    return articles
-
-
-def search_google_news(keywords, days_back=4):
-    """Search Google News RSS for keywords. Default 4 days for fast-moving markets."""
-    articles = []
-    try:
-        # Google News RSS search - limit to recent articles
-        encoded_query = quote_plus(keywords)
-        url = f"https://news.google.com/rss/search?q={encoded_query}+when:{days_back}d&hl=en-US&gl=US&ceid=US:en"
-
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
-        }
-        response = requests.get(url, headers=headers, timeout=15)
-        root = ET.fromstring(response.content)
-
-        for item in root.findall('.//item')[:8]:  # Limit results
-            title = item.find('title')
-            link = item.find('link')
-            pub_date = item.find('pubDate')
-            source = item.find('source')
-
-            if title is None or link is None:
-                continue
-
-            # Google News links redirect - try to get actual URL from link
-            actual_url = link.text
-
-            articles.append({
-                'url': actual_url,
-                'title': unescape(title.text) if title.text else '',
-                'description': '',
-                'published_date': pub_date.text if pub_date is not None else '',
-                'source': source.text if source is not None else '',
-                'author': '',
-            })
-    except Exception as e:
-        print(f"Error searching Google News for '{keywords}': {e}")
-
-    return articles
-
-
-def scrape_all_sources(max_days=4, min_score=0):
-    """Scrape all enabled sources and return new articles.
-
-    Args:
-        max_days: Only include articles published within this many days
-        min_score: Minimum relevance score to include (0-100)
-    """
-    db = get_db()
-    cur = db.cursor()
-
-    cur.execute("SELECT * FROM scrape_sources WHERE enabled = TRUE")
-    sources = cur.fetchall()
-
-    new_articles = []
-    skipped_old = 0
-    skipped_low_score = 0
-
-    for source in sources:
-        articles = []
-
-        if source['source_type'] == 'rss' and source['url']:
-            articles = parse_rss_feed(source['url'])
-        elif source['source_type'] == 'google_news' and source['keywords']:
-            articles = search_google_news(source['keywords'], days_back=max_days)
-
-        for article in articles:
-            # Check if URL already exists
-            cur.execute("SELECT id FROM links WHERE url = %s", (article['url'],))
-            if cur.fetchone():
-                continue
-
-            # Filter by date - skip articles older than max_days
-            pub_date = article.get('published_date', '')
-            if not is_recent_article(pub_date, max_days=max_days):
-                skipped_old += 1
-                continue
-
-            # Calculate relevance score
-            title = article.get('title', '')
-            description = article.get('description', '')
-            relevance_score = calculate_relevance_score(title, description)
-
-            # Skip low-relevance articles
-            if relevance_score < min_score:
-                skipped_low_score += 1
-                continue
-
-            # Insert new article with relevance score
-            try:
-                cur.execute('''
-                    INSERT INTO links (url, title, description, source, author, category, status, scraped_from, published_date, relevance_score, priority)
-                    VALUES (%s, %s, %s, %s, %s, %s, 'scraped', %s, %s, %s, %s)
-                    RETURNING id
-                ''', (
-                    article['url'],
-                    title,
-                    description,
-                    article.get('source', source['name']),
-                    article.get('author', ''),
-                    source['category'],
-                    source['name'],
-                    pub_date,
-                    relevance_score,
-                    1 if relevance_score >= 15 else 0  # Auto-prioritize high-relevance
-                ))
-                new_id = cur.fetchone()['id']
-                new_articles.append({
-                    **article,
-                    'id': new_id,
-                    'source_name': source['name'],
-                    'relevance_score': relevance_score
-                })
-            except Exception as e:
-                print(f"Error inserting article: {e}")
-                db.rollback()
-                continue
-
-        # Update last_scraped timestamp
-        cur.execute(
-            "UPDATE scrape_sources SET last_scraped = CURRENT_TIMESTAMP WHERE id = %s",
-            (source['id'],)
-        )
-
-    db.commit()
-    cur.close()
-
-    # Sort by relevance score descending
-    new_articles.sort(key=lambda x: x.get('relevance_score', 0), reverse=True)
-
-    return {
-        'articles': new_articles,
-        'count': len(new_articles),
-        'skipped_old': skipped_old,
-        'skipped_low_score': skipped_low_score
-    }
-
-
-def publish_to_beehiiv(title, content_html, status='draft'):
-    """Publish content to Beehiiv."""
-    if not BEEHIIV_API_KEY or not BEEHIIV_PUBLICATION_ID:
-        return {'error': 'Beehiiv API credentials not configured'}
-
-    try:
-        headers = {
-            'Authorization': f'Bearer {BEEHIIV_API_KEY}',
-            'Content-Type': 'application/json'
-        }
-
-        data = {
-            'title': title,
-            'content_html': content_html,
-            'status': status,  # 'draft', 'confirmed', or 'archived'
-        }
-
-        response = requests.post(
-            f'https://api.beehiiv.com/v2/publications/{BEEHIIV_PUBLICATION_ID}/posts',
-            headers=headers,
-            json=data,
-            timeout=30
-        )
-
-        if response.status_code in [200, 201]:
-            return {'success': True, 'data': response.json()}
-        else:
-            return {'error': f"Beehiiv API error: {response.status_code} - {response.text}"}
-
-    except Exception as e:
-        return {'error': f"Error publishing to Beehiiv: {str(e)}"}
 
 
 def require_auth(f):
@@ -532,6 +194,24 @@ def require_auth(f):
     return decorated
 
 
+def calculate_relevance(title, description):
+    """Calculate relevance score based on keyword tiers."""
+    text = f"{title} {description}".lower()
+    score = 0
+
+    for keyword in RELEVANCE_KEYWORDS['tier1']:
+        if keyword.lower() in text:
+            score += 10
+    for keyword in RELEVANCE_KEYWORDS['tier2']:
+        if keyword.lower() in text:
+            score += 5
+    for keyword in RELEVANCE_KEYWORDS['tier3']:
+        if keyword.lower() in text:
+            score += 2
+
+    return min(score, 100)  # Cap at 100
+
+
 def fetch_metadata(url):
     """Fetch Open Graph and meta data from URL."""
     try:
@@ -541,19 +221,16 @@ def fetch_metadata(url):
         response = requests.get(url, headers=headers, timeout=10)
         html = response.text
 
-        # Extract Open Graph tags
         og_title = re.search(r'<meta[^>]*property=["\']og:title["\'][^>]*content=["\']([^"\']+)["\']', html, re.I)
         og_desc = re.search(r'<meta[^>]*property=["\']og:description["\'][^>]*content=["\']([^"\']+)["\']', html, re.I)
         og_image = re.search(r'<meta[^>]*property=["\']og:image["\'][^>]*content=["\']([^"\']+)["\']', html, re.I)
         og_site = re.search(r'<meta[^>]*property=["\']og:site_name["\'][^>]*content=["\']([^"\']+)["\']', html, re.I)
 
-        # Fallback to regular meta tags
         if not og_title:
             og_title = re.search(r'<title[^>]*>([^<]+)</title>', html, re.I)
         if not og_desc:
             og_desc = re.search(r'<meta[^>]*name=["\']description["\'][^>]*content=["\']([^"\']+)["\']', html, re.I)
 
-        # Extract author
         author = re.search(r'<meta[^>]*name=["\']author["\'][^>]*content=["\']([^"\']+)["\']', html, re.I)
 
         parsed = urlparse(url)
@@ -567,7 +244,6 @@ def fetch_metadata(url):
             'author': author.group(1) if author else '',
         }
     except Exception as e:
-        print(f"Error fetching metadata: {e}")
         parsed = urlparse(url)
         return {
             'title': '',
@@ -578,13 +254,103 @@ def fetch_metadata(url):
         }
 
 
+def parse_rss_feed(feed_url, source_name, category):
+    """Parse RSS feed and return articles."""
+    articles = []
+    try:
+        response = requests.get(feed_url, timeout=15, headers={
+            'User-Agent': 'Mozilla/5.0 (compatible; TokenTrader/1.0)'
+        })
+        root = ET.fromstring(response.content)
+
+        # Handle different RSS formats
+        items = root.findall('.//item') or root.findall('.//{http://www.w3.org/2005/Atom}entry')
+
+        cutoff = datetime.now() - timedelta(days=4)
+
+        for item in items[:20]:  # Limit to 20 per feed
+            title = item.findtext('title') or item.findtext('{http://www.w3.org/2005/Atom}title') or ''
+            link = item.findtext('link') or ''
+            if not link:
+                link_elem = item.find('{http://www.w3.org/2005/Atom}link')
+                if link_elem is not None:
+                    link = link_elem.get('href', '')
+
+            description = item.findtext('description') or item.findtext('{http://www.w3.org/2005/Atom}summary') or ''
+            description = re.sub(r'<[^>]+>', '', description)[:500]  # Strip HTML, limit length
+
+            pub_date = item.findtext('pubDate') or item.findtext('{http://www.w3.org/2005/Atom}published')
+
+            if title and link:
+                relevance = calculate_relevance(title, description)
+                articles.append({
+                    'url': link,
+                    'title': unescape(title),
+                    'description': unescape(description),
+                    'source': source_name,
+                    'category': category,
+                    'relevance_score': relevance,
+                    'scraped_from': f'rss:{source_name}',
+                })
+    except Exception as e:
+        print(f"Error parsing RSS {feed_url}: {e}")
+
+    return articles
+
+
+def search_google_news(query, category):
+    """Search Google News RSS for articles."""
+    articles = []
+    try:
+        encoded_query = quote_plus(query)
+        # Google News RSS with date filter
+        url = f"https://news.google.com/rss/search?q={encoded_query}+when:4d&hl=en-US&gl=US&ceid=US:en"
+
+        response = requests.get(url, timeout=15, headers={
+            'User-Agent': 'Mozilla/5.0 (compatible; TokenTrader/1.0)'
+        })
+        root = ET.fromstring(response.content)
+
+        for item in root.findall('.//item')[:10]:  # Limit to 10 per query
+            title = item.findtext('title') or ''
+            link = item.findtext('link') or ''
+            description = item.findtext('description') or ''
+            description = re.sub(r'<[^>]+>', '', description)[:500]
+
+            # Extract source from title (Google News format: "Title - Source")
+            source = 'Google News'
+            if ' - ' in title:
+                parts = title.rsplit(' - ', 1)
+                if len(parts) == 2:
+                    title, source = parts
+
+            if title and link:
+                relevance = calculate_relevance(title, description)
+                articles.append({
+                    'url': link,
+                    'title': unescape(title),
+                    'description': unescape(description),
+                    'source': source,
+                    'category': category,
+                    'relevance_score': relevance,
+                    'scraped_from': f'google_news:{query}',
+                })
+    except Exception as e:
+        print(f"Error searching Google News for '{query}': {e}")
+
+    return articles
+
+
+# ============================================================
+# ROUTES - Authentication
+# ============================================================
+
 @app.route('/login', methods=['GET', 'POST'])
 def login():
-    """Login page."""
     if request.method == 'POST':
         if request.form.get('password') == PASSWORD:
             session['authenticated'] = True
-            return redirect(url_for('index'))
+            return redirect(url_for('dashboard'))
         return render_template('login.html', error='Invalid password')
     return render_template('login.html')
 
@@ -595,17 +361,62 @@ def logout():
     return redirect(url_for('login'))
 
 
+# ============================================================
+# ROUTES - Dashboard
+# ============================================================
+
 @app.route('/')
 @require_auth
-def index():
-    """Main dashboard."""
+def dashboard():
+    """Main admin dashboard."""
     db = get_db()
     cur = db.cursor()
 
-    # Get filter parameters
+    # Get link counts by status
+    link_counts = {}
+    for status in STATUSES:
+        cur.execute('SELECT COUNT(*) as count FROM links WHERE status = %s', (status,))
+        link_counts[status] = cur.fetchone()['count']
+
+    # Get recent benchmark runs
+    cur.execute('''
+        SELECT * FROM benchmark_runs
+        ORDER BY created_at DESC LIMIT 5
+    ''')
+    recent_benchmarks = cur.fetchall()
+
+    # Get high-relevance articles
+    cur.execute('''
+        SELECT * FROM links
+        WHERE status = 'scraped' AND relevance_score >= 15
+        ORDER BY relevance_score DESC, created_at DESC
+        LIMIT 10
+    ''')
+    high_relevance = cur.fetchall()
+
+    cur.close()
+
+    return render_template('dashboard.html',
+                          link_counts=link_counts,
+                          recent_benchmarks=recent_benchmarks,
+                          high_relevance=high_relevance)
+
+
+# ============================================================
+# ROUTES - Link Management
+# ============================================================
+
+@app.route('/links')
+@require_auth
+def links():
+    """Link management page."""
+    db = get_db()
+    cur = db.cursor()
+
     status_filter = request.args.get('status', '')
     category_filter = request.args.get('category', '')
     issue_filter = request.args.get('issue', '')
+    min_relevance = request.args.get('min_relevance', '')
 
     query = 'SELECT * FROM links WHERE 1=1'
     params = []
@@ -619,17 +430,18 @@ def index():
     if issue_filter:
         query += ' AND issue = %s'
         params.append(issue_filter)
+    if min_relevance:
+        query += ' AND relevance_score >= %s'
+        params.append(int(min_relevance))
 
-    query += ' ORDER BY priority DESC, created_at DESC'
+    query += ' ORDER BY relevance_score DESC, priority DESC, created_at DESC'
 
     cur.execute(query, params)
     links = cur.fetchall()
 
-    # Get unique issues for filter dropdown
     cur.execute("SELECT DISTINCT issue FROM links WHERE issue != '' ORDER BY issue DESC")
     issues = cur.fetchall()
 
-    # Get counts by status
     counts = {}
     for status in STATUSES:
         cur.execute('SELECT COUNT(*) as count FROM links WHERE status = %s', (status,))
@@ -637,7 +449,7 @@ def index():
 
     cur.close()
 
-    return render_template('index.html',
+    return render_template('links.html',
                           links=links,
                           categories=CATEGORIES,
                           statuses=STATUSES,
@@ -647,20 +459,19 @@ def index():
                               'status': status_filter,
                               'category': category_filter,
                               'issue': issue_filter,
+                              'min_relevance': min_relevance,
                           })
 
 
-@app.route('/add', methods=['GET', 'POST'])
+@app.route('/links/add', methods=['GET', 'POST'])
 @require_auth
 def add_link():
-    """Add a new link."""
     if request.method == 'POST':
         url = request.form.get('url', '').strip()
 
         if not url:
-            return render_template('add.html', categories=CATEGORIES, error='URL is required')
+            return render_template('add_link.html', categories=CATEGORIES, error='URL is required')
 
-        # Check for duplicate
         db = get_db()
         cur = db.cursor()
         cur.execute('SELECT id FROM links WHERE url = %s', (url,))
@@ -669,10 +480,8 @@ def add_link():
             cur.close()
             return redirect(url_for('edit_link', link_id=existing['id']))
 
-        # Fetch metadata
         metadata = fetch_metadata(url)
 
-        # Get form data (override metadata if provided)
         title = request.form.get('title', '').strip() or metadata['title']
         description = request.form.get('description', '').strip() or metadata['description']
         source = request.form.get('source', '').strip() or metadata['source']
@@ -682,35 +491,23 @@ def add_link():
         notes = request.form.get('notes', '').strip()
         issue = request.form.get('issue', '').strip()
         priority = int(request.form.get('priority', 0))
+        relevance = calculate_relevance(title, description)
 
         cur.execute('''
-            INSERT INTO links (url, title, description, source, author, image_url, category, tags, notes, issue, priority)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ''', (url, title, description, source, author, metadata['image_url'], category, tags, notes, issue, priority))
+            INSERT INTO links (url, title, description, source, author, image_url, category, tags, notes, issue, priority, relevance_score, status)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'saved')
+        ''', (url, title, description, source, author, metadata['image_url'], category, tags, notes, issue, priority, relevance))
         db.commit()
         cur.close()
 
-        return redirect(url_for('index'))
+        return redirect(url_for('links'))
 
-    return render_template('add.html', categories=CATEGORIES)
-
-
-@app.route('/fetch-metadata', methods=['POST'])
-@require_auth
-def fetch_metadata_api():
-    """API endpoint to fetch metadata for a URL."""
-    url = request.json.get('url', '')
-    if not url:
-        return jsonify({'error': 'URL required'}), 400
-
-    metadata = fetch_metadata(url)
-    return jsonify(metadata)
+    return render_template('add_link.html', categories=CATEGORIES)
 
 
-@app.route('/edit/<int:link_id>', methods=['GET', 'POST'])
+@app.route('/links/edit/<int:link_id>', methods=['GET', 'POST'])
 @require_auth
 def edit_link(link_id):
-    """Edit an existing link."""
     db = get_db()
     cur = db.cursor()
     cur.execute('SELECT * FROM links WHERE id = %s', (link_id,))
@@ -718,7 +515,7 @@ def edit_link(link_id):
 
     if not link:
         cur.close()
-        return redirect(url_for('index'))
+        return redirect(url_for('links'))
 
     if request.method == 'POST':
         title = request.form.get('title', '').strip()
@@ -742,38 +539,34 @@ def edit_link(link_id):
         db.commit()
         cur.close()
 
-        return redirect(url_for('index'))
+        return redirect(url_for('links'))
 
     cur.close()
-    return render_template('edit.html', link=link, categories=CATEGORIES, statuses=STATUSES)
+    return render_template('edit_link.html', link=link, categories=CATEGORIES, statuses=STATUSES)
 
 
-@app.route('/delete/<int:link_id>', methods=['POST'])
+@app.route('/links/delete/<int:link_id>', methods=['POST'])
 @require_auth
 def delete_link(link_id):
-    """Delete a link."""
     db = get_db()
     cur = db.cursor()
     cur.execute('DELETE FROM links WHERE id = %s', (link_id,))
     db.commit()
     cur.close()
-    return redirect(url_for('index'))
+    return redirect(url_for('links'))
 
 
-@app.route('/bulk-update', methods=['POST'])
+@app.route('/links/bulk-update', methods=['POST'])
 @require_auth
 def bulk_update():
-    """Bulk update links."""
     link_ids = request.form.getlist('link_ids')
     action = request.form.get('action')
 
     if not link_ids:
-        return redirect(url_for('index'))
+        return redirect(url_for('links'))
 
     db = get_db()
     cur = db.cursor()
-
-    # Convert to integers
     link_ids = [int(lid) for lid in link_ids]
 
     if action in STATUSES:
@@ -786,229 +579,119 @@ def bulk_update():
 
     db.commit()
     cur.close()
-    return redirect(url_for('index'))
+    return redirect(url_for('links'))
 
 
-@app.route('/export')
-@require_auth
-def export_links():
-    """Export links for newsletter."""
-    db = get_db()
-    cur = db.cursor()
-
-    issue = request.args.get('issue', '')
-    format_type = request.args.get('format', 'markdown')
-
-    query = "SELECT * FROM links WHERE status = 'scheduled'"
-    params = []
-
-    if issue:
-        query += ' AND issue = %s'
-        params.append(issue)
-
-    query += ' ORDER BY category, priority DESC'
-
-    cur.execute(query, params)
-    links = cur.fetchall()
-    cur.close()
-
-    # Group by category
-    by_category = {}
-    for link in links:
-        cat = link['category']
-        if cat not in by_category:
-            by_category[cat] = []
-        by_category[cat].append(link)
-
-    if format_type == 'markdown':
-        output = f"# Links for Newsletter\n\n"
-        if issue:
-            output += f"**Issue:** {issue}\n\n"
-
-        for category, cat_links in by_category.items():
-            output += f"## {category}\n\n"
-            for link in cat_links:
-                output += f"**[{link['title']}]({link['url']})**"
-                if link['source']:
-                    output += f" — {link['source']}"
-                output += "\n"
-                if link['description']:
-                    output += f"{link['description']}\n"
-                if link['notes']:
-                    output += f"*{link['notes']}*\n"
-                output += "\n"
-
-        return render_template('export.html', output=output, format='markdown', issue=issue)
-
-    elif format_type == 'html':
-        output = ""
-        for category, cat_links in by_category.items():
-            output += f'<h3 style="color: #c9a227; margin-top: 24px;">{category}</h3>\n'
-            for link in cat_links:
-                output += f'<p style="margin-bottom: 16px;">\n'
-                output += f'  <strong><a href="{link["url"]}" style="color: #1a1a1a;">{link["title"]}</a></strong>'
-                if link['source']:
-                    output += f' — <span style="color: #666;">{link["source"]}</span>'
-                output += '<br>\n'
-                if link['description']:
-                    output += f'  <span style="color: #333;">{link["description"]}</span><br>\n'
-                if link['notes']:
-                    output += f'  <em style="color: #666;">{link["notes"]}</em>\n'
-                output += '</p>\n'
-
-        return render_template('export.html', output=output, format='html', issue=issue)
-
-    elif format_type == 'json':
-        data = [dict(link) for link in links]
-        return jsonify(data)
-
-    return redirect(url_for('index'))
-
+# ============================================================
+# ROUTES - Scraping
+# ============================================================
 
 @app.route('/scrape')
 @require_auth
 def scrape_page():
-    """Scrape management page."""
-    db = get_db()
-    cur = db.cursor()
-
-    # Get all sources
-    cur.execute("SELECT * FROM scrape_sources ORDER BY enabled DESC, name")
-    sources = cur.fetchall()
-
-    # Get scraped articles count
-    cur.execute("SELECT COUNT(*) as count FROM links WHERE status = 'scraped'")
-    scraped_count = cur.fetchone()['count']
-
-    # Get recent scraped articles - sorted by relevance score, then date
-    cur.execute("""
-        SELECT * FROM links
-        WHERE status = 'scraped'
-        ORDER BY relevance_score DESC, created_at DESC
-        LIMIT 50
-    """)
-    recent_scraped = cur.fetchall()
-
-    cur.close()
-
+    """Scraping control page."""
     return render_template('scrape.html',
-                          sources=sources,
-                          scraped_count=scraped_count,
-                          recent_scraped=recent_scraped,
-                          categories=CATEGORIES)
+                          rss_feeds=RSS_FEEDS,
+                          google_queries=GOOGLE_NEWS_QUERIES)
 
 
 @app.route('/scrape/run', methods=['POST'])
 @require_auth
 def run_scrape():
-    """Run scraping on all enabled sources."""
-    result = scrape_all_sources(max_days=4, min_score=0)
-    return jsonify({
-        'success': True,
-        'new_articles': result['count'],
-        'skipped_old': result['skipped_old'],
-        'skipped_low_score': result['skipped_low_score'],
-        'articles': result['articles'][:20]  # Return first 20 for display
-    })
+    """Run the scraper."""
+    source_type = request.form.get('source_type', 'all')
 
-
-@app.route('/scrape/source', methods=['POST'])
-@require_auth
-def add_source():
-    """Add a new scrape source."""
     db = get_db()
     cur = db.cursor()
 
-    name = request.form.get('name', '').strip()
-    source_type = request.form.get('source_type', 'rss')
-    url = request.form.get('url', '').strip()
-    keywords = request.form.get('keywords', '').strip()
-    category = request.form.get('category', 'Other')
+    all_articles = []
 
-    if not name:
-        return redirect(url_for('scrape_page'))
+    # Scrape RSS feeds
+    if source_type in ['all', 'rss']:
+        for feed in RSS_FEEDS:
+            articles = parse_rss_feed(feed['url'], feed['name'], feed['category'])
+            all_articles.extend(articles)
 
-    try:
-        cur.execute('''
-            INSERT INTO scrape_sources (name, source_type, url, keywords, category)
-            VALUES (%s, %s, %s, %s, %s)
-        ''', (name, source_type, url, keywords, category))
-        db.commit()
-    except Exception as e:
-        print(f"Error adding source: {e}")
+    # Scrape Google News
+    if source_type in ['all', 'google']:
+        for query_config in GOOGLE_NEWS_QUERIES:
+            articles = search_google_news(query_config['query'], query_config['category'])
+            all_articles.extend(articles)
 
-    cur.close()
-    return redirect(url_for('scrape_page'))
+    # Insert into database (skip duplicates)
+    new_count = 0
+    for article in all_articles:
+        try:
+            cur.execute('SELECT id FROM links WHERE url = %s', (article['url'],))
+            if not cur.fetchone():
+                cur.execute('''
+                    INSERT INTO links (url, title, description, source, category, relevance_score, scraped_from, status)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, 'scraped')
+                ''', (
+                    article['url'],
+                    article['title'],
+                    article['description'],
+                    article['source'],
+                    article['category'],
+                    article['relevance_score'],
+                    article['scraped_from'],
+                ))
+                new_count += 1
+        except Exception as e:
+            print(f"Error inserting article: {e}")
+            db.rollback()
 
-
-@app.route('/scrape/source/<int:source_id>/toggle', methods=['POST'])
-@require_auth
-def toggle_source(source_id):
-    """Toggle a source's enabled status."""
-    db = get_db()
-    cur = db.cursor()
-    cur.execute(
-        "UPDATE scrape_sources SET enabled = NOT enabled WHERE id = %s",
-        (source_id,)
-    )
     db.commit()
     cur.close()
-    return redirect(url_for('scrape_page'))
+
+    return redirect(url_for('links', status='scraped', min_relevance='15'))
 
 
-@app.route('/scrape/source/<int:source_id>/delete', methods=['POST'])
+# ============================================================
+# ROUTES - Benchmark
+# ============================================================
+
+@app.route('/benchmark')
 @require_auth
-def delete_source(source_id):
-    """Delete a scrape source."""
+def benchmark_page():
+    """Benchmark control page."""
     db = get_db()
     cur = db.cursor()
-    cur.execute("DELETE FROM scrape_sources WHERE id = %s", (source_id,))
-    db.commit()
+
+    cur.execute('SELECT * FROM benchmark_runs ORDER BY created_at DESC LIMIT 10')
+    runs = cur.fetchall()
     cur.close()
-    return redirect(url_for('scrape_page'))
+
+    return render_template('benchmark.html', runs=runs)
 
 
-@app.route('/scrape/approve', methods=['POST'])
+@app.route('/benchmark/results/<run_id>')
 @require_auth
-def approve_scraped():
-    """Move scraped articles to saved status."""
-    link_ids = request.form.getlist('link_ids')
-    if not link_ids:
-        return redirect(url_for('scrape_page'))
-
+def benchmark_results(run_id):
+    """View benchmark results."""
     db = get_db()
     cur = db.cursor()
-    link_ids = [int(lid) for lid in link_ids]
-    cur.execute(
-        "UPDATE links SET status = 'saved', updated_at = CURRENT_TIMESTAMP WHERE id = ANY(%s)",
-        (link_ids,)
-    )
-    db.commit()
+
+    cur.execute('SELECT * FROM benchmark_runs WHERE run_id = %s', (run_id,))
+    run = cur.fetchone()
     cur.close()
-    return redirect(url_for('scrape_page'))
+
+    if not run:
+        return redirect(url_for('benchmark_page'))
+
+    results = json.loads(run['results_json']) if run['results_json'] else {}
+
+    return render_template('benchmark_results.html', run=run, results=results)
 
 
-@app.route('/scrape/dismiss', methods=['POST'])
+# ============================================================
+# ROUTES - Newsletter Composer
+# ============================================================
+
+@app.route('/compose')
 @require_auth
-def dismiss_scraped():
-    """Archive/dismiss scraped articles."""
-    link_ids = request.form.getlist('link_ids')
-    if not link_ids:
-        return redirect(url_for('scrape_page'))
-
-    db = get_db()
-    cur = db.cursor()
-    link_ids = [int(lid) for lid in link_ids]
-    cur.execute("DELETE FROM links WHERE id = ANY(%s)", (link_ids,))
-    db.commit()
-    cur.close()
-    return redirect(url_for('scrape_page'))
-
-
-@app.route('/beehiiv')
-@require_auth
-def beehiiv_page():
-    """Beehiiv integration page."""
+def compose_newsletter():
+    """Newsletter composition page."""
     db = get_db()
     cur = db.cursor()
 
@@ -1020,58 +703,49 @@ def beehiiv_page():
     if issue:
         query += ' AND issue = %s'
         params.append(issue)
-    query += ' ORDER BY category, priority DESC'
+    query += ' ORDER BY category, priority DESC, relevance_score DESC'
 
     cur.execute(query, params)
     links = cur.fetchall()
 
-    # Get unique issues
+    # Get latest benchmark
+    cur.execute('''
+        SELECT * FROM benchmark_runs
+        WHERE status = 'completed'
+        ORDER BY created_at DESC LIMIT 1
+    ''')
+    latest_benchmark = cur.fetchone()
+
+    # Get available issues
     cur.execute("SELECT DISTINCT issue FROM links WHERE issue != '' ORDER BY issue DESC")
-    issues = [i['issue'] for i in cur.fetchall()]
+    issues = cur.fetchall()
 
     cur.close()
 
-    # Group by category
-    by_category = {}
+    # Group links by category
+    links_by_category = {}
     for link in links:
         cat = link['category']
-        if cat not in by_category:
-            by_category[cat] = []
-        by_category[cat].append(link)
+        if cat not in links_by_category:
+            links_by_category[cat] = []
+        links_by_category[cat].append(link)
 
-    # Generate HTML preview
-    html_preview = ""
-    for category, cat_links in by_category.items():
-        html_preview += f'<h3 style="color: #c9a227; margin-top: 24px; font-family: Georgia, serif;">{category}</h3>\n'
-        for link in cat_links:
-            html_preview += '<div style="margin-bottom: 16px;">\n'
-            html_preview += f'  <strong><a href="{link["url"]}" style="color: #1a1a1a; text-decoration: none;">{link["title"]}</a></strong>'
-            if link['source']:
-                html_preview += f' <span style="color: #888;">— {link["source"]}</span>'
-            html_preview += '<br>\n'
-            if link['description']:
-                html_preview += f'  <span style="color: #333; font-size: 14px;">{link["description"]}</span><br>\n'
-            if link['notes']:
-                html_preview += f'  <em style="color: #666; font-size: 13px;">{link["notes"]}</em>\n'
-            html_preview += '</div>\n'
-
-    beehiiv_configured = bool(BEEHIIV_API_KEY and BEEHIIV_PUBLICATION_ID)
-
-    return render_template('beehiiv.html',
+    return render_template('compose.html',
                           links=links,
-                          by_category=by_category,
-                          html_preview=html_preview,
-                          issues=issues,
-                          selected_issue=issue,
-                          beehiiv_configured=beehiiv_configured)
+                          links_by_category=links_by_category,
+                          latest_benchmark=latest_benchmark,
+                          issues=[i['issue'] for i in issues],
+                          current_issue=issue)
 
 
-@app.route('/beehiiv/publish', methods=['POST'])
+@app.route('/compose/preview', methods=['POST'])
 @require_auth
-def publish_beehiiv():
-    """Publish scheduled content to Beehiiv."""
-    title = request.form.get('title', 'The Token Trader Newsletter')
+def preview_newsletter():
+    """Generate newsletter preview."""
     issue = request.form.get('issue', '')
+    include_benchmark = request.form.get('include_benchmark') == 'on'
+    benchmark_run_id = request.form.get('benchmark_run_id', '')
+    intro_text = request.form.get('intro_text', '')
 
     db = get_db()
     cur = db.cursor()
@@ -1086,11 +760,26 @@ def publish_beehiiv():
 
     cur.execute(query, params)
     links = cur.fetchall()
+
+    # Get benchmark if requested
+    benchmark_html = ''
+    if include_benchmark and benchmark_run_id:
+        cur.execute('SELECT * FROM benchmark_runs WHERE run_id = %s', (benchmark_run_id,))
+        benchmark = cur.fetchone()
+        if benchmark and benchmark['newsletter_md']:
+            # Convert markdown to basic HTML (simplified)
+            benchmark_html = benchmark['newsletter_md']
+
     cur.close()
 
-    if not links:
-        return jsonify({'error': 'No scheduled links to publish'})
+    # Generate HTML
+    html = generate_newsletter_html(links, benchmark_html, intro_text, issue)
 
+    return render_template('preview.html', html=html, issue=issue)
+
+
+def generate_newsletter_html(links, benchmark_section, intro_text, issue):
+    """Generate newsletter HTML."""
     # Group by category
     by_category = {}
     for link in links:
@@ -1099,44 +788,90 @@ def publish_beehiiv():
             by_category[cat] = []
         by_category[cat].append(link)
 
-    # Build HTML content
-    html_content = '<div style="font-family: Georgia, serif; max-width: 600px; margin: 0 auto;">\n'
+    html = f'''
+<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto;">
+    <div style="text-align: center; padding: 20px 0; border-bottom: 3px solid #c9a227;">
+        <h1 style="color: #1a1a1a; margin: 0; font-size: 28px;">THE TOKEN TRADER</h1>
+        <p style="color: #666; margin: 8px 0 0; font-style: italic;">Inference is the new oil.</p>
+    </div>
+'''
 
-    for category, cat_links in by_category.items():
-        html_content += f'<h3 style="color: #c9a227; margin-top: 24px; border-bottom: 1px solid #eee; padding-bottom: 8px;">{category}</h3>\n'
-        for link in cat_links:
-            html_content += '<div style="margin-bottom: 20px;">\n'
-            html_content += f'  <p style="margin: 0;"><strong><a href="{link["url"]}" style="color: #1a1a1a;">{link["title"]}</a></strong>'
-            if link['source']:
-                html_content += f' <span style="color: #888;">— {link["source"]}</span>'
-            html_content += '</p>\n'
-            if link['description']:
-                html_content += f'  <p style="margin: 4px 0; color: #333; font-size: 15px;">{link["description"]}</p>\n'
-            if link['notes']:
-                html_content += f'  <p style="margin: 4px 0; color: #666; font-style: italic; font-size: 14px;">{link["notes"]}</p>\n'
-            html_content += '</div>\n'
+    if intro_text:
+        html += f'''
+    <div style="padding: 20px 0; border-bottom: 1px solid #eee;">
+        <p style="color: #333; line-height: 1.6;">{intro_text}</p>
+    </div>
+'''
 
-    html_content += '</div>'
+    if benchmark_section:
+        html += f'''
+    <div style="padding: 20px 0; border-bottom: 1px solid #eee;">
+        <h2 style="color: #c9a227; font-size: 20px; margin: 0 0 16px;">This Week's Inference Price Index</h2>
+        <div style="background: #f9f9f9; padding: 16px; border-radius: 8px;">
+            {benchmark_section}
+        </div>
+    </div>
+'''
 
-    # Publish to Beehiiv
-    result = publish_to_beehiiv(title, html_content, status='draft')
+    if by_category:
+        html += '''
+    <div style="padding: 20px 0;">
+        <h2 style="color: #c9a227; font-size: 20px; margin: 0 0 16px;">What We're Reading</h2>
+'''
+        for category, cat_links in by_category.items():
+            html += f'''
+        <h3 style="color: #1a1a1a; font-size: 16px; margin: 20px 0 12px; padding-bottom: 8px; border-bottom: 1px solid #eee;">{category}</h3>
+'''
+            for link in cat_links:
+                html += f'''
+        <div style="margin-bottom: 16px;">
+            <a href="{link['url']}" style="color: #1a1a1a; font-weight: 600; text-decoration: none;">{link['title']}</a>
+            <span style="color: #666;"> — {link['source']}</span>
+'''
+                if link['description']:
+                    html += f'''
+            <p style="color: #444; margin: 4px 0 0; font-size: 14px; line-height: 1.5;">{link['description'][:200]}{'...' if len(link['description'] or '') > 200 else ''}</p>
+'''
+                if link['notes']:
+                    html += f'''
+            <p style="color: #666; margin: 4px 0 0; font-size: 14px; font-style: italic;">{link['notes']}</p>
+'''
+                html += '''
+        </div>
+'''
+        html += '''
+    </div>
+'''
 
-    if result.get('success'):
-        # Mark links as published
-        db = get_db()
-        cur = db.cursor()
-        link_ids = [link['id'] for link in links]
-        cur.execute(
-            "UPDATE links SET status = 'published', updated_at = CURRENT_TIMESTAMP WHERE id = ANY(%s)",
-            (link_ids,)
-        )
-        db.commit()
-        cur.close()
+    html += '''
+    <div style="text-align: center; padding: 20px 0; border-top: 1px solid #eee; color: #666; font-size: 12px;">
+        <p>The Token Trader — The price-and-fundamentals authority for AI as a commodity.</p>
+    </div>
+</div>
+'''
 
-    return jsonify(result)
+    return html
 
 
-# Initialize DB on first request
+# ============================================================
+# API Endpoints
+# ============================================================
+
+@app.route('/api/fetch-metadata', methods=['POST'])
+@require_auth
+def fetch_metadata_api():
+    url = request.json.get('url', '')
+    if not url:
+        return jsonify({'error': 'URL required'}), 400
+    metadata = fetch_metadata(url)
+    metadata['relevance_score'] = calculate_relevance(metadata.get('title', ''), metadata.get('description', ''))
+    return jsonify(metadata)
+
+
+# ============================================================
+# Initialization
+# ============================================================
+
 _db_initialized = False
 
 @app.before_request

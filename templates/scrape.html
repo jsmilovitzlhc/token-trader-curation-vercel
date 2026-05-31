@@ -1,235 +1,201 @@
-{% extends 'base.html' %}
+{% extends "base.html" %}
 
-{% block title %}Scrape Articles - Token Trader{% endblock %}
+{% block title %}Scrape — Token Trader Admin{% endblock %}
 
 {% block content %}
-<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
-    <h2>Article Scraper</h2>
-    <button id="runScrape" class="btn btn-primary">Run Scraper Now</button>
-</div>
-<p style="color: #666; font-size: 14px; margin-bottom: 24px;">
-    Fetches articles from the last 4 days. Scored by relevance to Token Trader topics:
-    <span style="background: #22c55e; color: white; padding: 1px 6px; border-radius: 8px; font-size: 11px;">15+</span> high value,
-    <span style="background: #f59e0b; color: white; padding: 1px 6px; border-radius: 8px; font-size: 11px;">5-14</span> relevant,
-    <span style="background: #9ca3af; color: white; padding: 1px 6px; border-radius: 8px; font-size: 11px;">0-4</span> low fit.
-</p>
-
-<div class="stats">
-    <div class="stat">
-        <div class="stat-value">{{ scraped_count }}</div>
-        <div class="stat-label">Pending Review</div>
-    </div>
-    <div class="stat">
-        <div class="stat-value">{{ sources|length }}</div>
-        <div class="stat-label">Active Sources</div>
-    </div>
+<div class="page-header">
+    <h1>Article Scraper</h1>
 </div>
 
-<div id="scrapeResult" class="alert" style="display: none;"></div>
+<div class="scrape-grid">
+    <div class="card">
+        <h2>Run Scraper</h2>
+        <p>Scrape articles from RSS feeds and Google News based on Token Trader's value chain keywords.</p>
 
-<!-- Scrape Sources -->
-<div class="card">
-    <h3 style="margin-bottom: 16px;">Scrape Sources</h3>
-
-    <form action="{{ url_for('add_source') }}" method="POST" style="margin-bottom: 24px; padding-bottom: 24px; border-bottom: 1px solid #eee;">
-        <div class="form-row">
+        <form method="POST" action="{{ url_for('run_scrape') }}" class="scrape-form">
             <div class="form-group">
-                <label>Name</label>
-                <input type="text" name="name" placeholder="Source name" required>
-            </div>
-            <div class="form-group">
-                <label>Type</label>
+                <label>Source Type</label>
                 <select name="source_type">
-                    <option value="rss">RSS Feed</option>
-                    <option value="google_news">Google News Search</option>
+                    <option value="all">All Sources (RSS + Google News)</option>
+                    <option value="rss">RSS Feeds Only</option>
+                    <option value="google">Google News Only</option>
                 </select>
             </div>
-            <div class="form-group">
-                <label>URL (for RSS)</label>
-                <input type="text" name="url" placeholder="https://example.com/feed.xml">
+            <button type="submit" class="btn btn-primary btn-large">Run Scraper</button>
+        </form>
+    </div>
+
+    <div class="card">
+        <h2>Relevance Scoring</h2>
+        <p>Articles are scored 0-100 based on keyword relevance to Token Trader's coverage areas.</p>
+
+        <div class="scoring-tiers">
+            <div class="tier">
+                <div class="tier-header">
+                    <span class="tier-label high">Tier 1</span>
+                    <span class="tier-points">+10 pts each</span>
+                </div>
+                <div class="tier-keywords">
+                    inference pricing, cost per token, compute futures, GPU rental, NVIDIA earnings, H100/H200, CoreWeave, Lambda Labs
+                </div>
             </div>
-            <div class="form-group">
-                <label>Keywords (for Google News)</label>
-                <input type="text" name="keywords" placeholder="AI inference pricing">
+
+            <div class="tier">
+                <div class="tier-header">
+                    <span class="tier-label medium">Tier 2</span>
+                    <span class="tier-points">+5 pts each</span>
+                </div>
+                <div class="tier-keywords">
+                    OpenAI/Anthropic/Google pricing, data center power, PJM, CFTC, commodity futures, inference API
+                </div>
             </div>
-            <div class="form-group">
-                <label>Category</label>
-                <select name="category">
-                    {% for cat in categories %}
-                    <option value="{{ cat }}">{{ cat }}</option>
-                    {% endfor %}
-                </select>
+
+            <div class="tier">
+                <div class="tier-header">
+                    <span class="tier-label low">Tier 3</span>
+                    <span class="tier-points">+2 pts each</span>
+                </div>
+                <div class="tier-keywords">
+                    NVIDIA, AMD, GPU, AWS/Azure/GCP, LLM, foundation model, enterprise AI
+                </div>
             </div>
         </div>
-        <button type="submit" class="btn btn-secondary">Add Source</button>
-    </form>
 
-    <table style="width: 100%; border-collapse: collapse;">
+        <p class="note">Articles scoring 15+ are auto-highlighted for review.</p>
+    </div>
+</div>
+
+<div class="card">
+    <h2>RSS Feeds</h2>
+    <table class="sources-table">
         <thead>
-            <tr style="text-align: left; border-bottom: 2px solid #eee;">
-                <th style="padding: 8px 0;">Name</th>
-                <th>Type</th>
-                <th>URL / Keywords</th>
+            <tr>
+                <th>Name</th>
+                <th>URL</th>
                 <th>Category</th>
-                <th>Last Scraped</th>
-                <th>Actions</th>
             </tr>
         </thead>
         <tbody>
-            {% for source in sources %}
-            <tr style="border-bottom: 1px solid #eee; opacity: {{ '1' if source.enabled else '0.5' }};">
-                <td style="padding: 12px 0;">{{ source.name }}</td>
-                <td><span class="tag">{{ source.source_type }}</span></td>
-                <td style="max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-                    {{ source.url or source.keywords }}
-                </td>
-                <td><span class="tag tag-category">{{ source.category }}</span></td>
-                <td style="font-size: 12px; color: #666;">
-                    {{ source.last_scraped.strftime('%Y-%m-%d %H:%M') if source.last_scraped else 'Never' }}
-                </td>
-                <td>
-                    <form action="{{ url_for('toggle_source', source_id=source.id) }}" method="POST" style="display: inline;">
-                        <button type="submit" class="btn btn-sm btn-secondary">
-                            {{ 'Disable' if source.enabled else 'Enable' }}
-                        </button>
-                    </form>
-                    <form action="{{ url_for('delete_source', source_id=source.id) }}" method="POST" style="display: inline;">
-                        <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Delete this source?')">Delete</button>
-                    </form>
-                </td>
+            {% for feed in rss_feeds %}
+            <tr>
+                <td>{{ feed.name }}</td>
+                <td><code>{{ feed.url[:60] }}...</code></td>
+                <td>{{ feed.category }}</td>
             </tr>
             {% endfor %}
         </tbody>
     </table>
 </div>
 
-<!-- Scraped Articles for Review -->
-{% if recent_scraped %}
 <div class="card">
-    <h3 style="margin-bottom: 16px;">Articles to Review ({{ scraped_count }})</h3>
-
-    <form id="reviewForm" method="POST">
-        <div class="bulk-actions">
-            <input type="checkbox" id="selectAll" style="margin-right: 8px;">
-            <label for="selectAll" style="margin-right: 16px;">Select All</label>
-            <button type="submit" formaction="{{ url_for('approve_scraped') }}" class="btn btn-primary btn-sm">
-                Approve Selected
-            </button>
-            <button type="submit" formaction="{{ url_for('dismiss_scraped') }}" class="btn btn-danger btn-sm">
-                Dismiss Selected
-            </button>
-        </div>
-
-        <ul class="link-list">
-            {% for link in recent_scraped %}
-            <li class="link-item">
-                <div class="link-checkbox">
-                    <input type="checkbox" name="link_ids" value="{{ link.id }}" class="article-checkbox">
-                </div>
-                <div class="link-content">
-                    <div class="link-title">
-                        <a href="{{ link.url }}" target="_blank">{{ link.title or 'No title' }}</a>
-                        {% if link.relevance_score and link.relevance_score >= 15 %}
-                        <span style="background: #22c55e; color: white; padding: 2px 8px; border-radius: 10px; font-size: 11px; margin-left: 8px;">
-                            Score: {{ link.relevance_score }}
-                        </span>
-                        {% elif link.relevance_score and link.relevance_score >= 5 %}
-                        <span style="background: #f59e0b; color: white; padding: 2px 8px; border-radius: 10px; font-size: 11px; margin-left: 8px;">
-                            Score: {{ link.relevance_score }}
-                        </span>
-                        {% elif link.relevance_score %}
-                        <span style="background: #9ca3af; color: white; padding: 2px 8px; border-radius: 10px; font-size: 11px; margin-left: 8px;">
-                            Score: {{ link.relevance_score }}
-                        </span>
-                        {% endif %}
-                    </div>
-                    <div class="link-meta">
-                        {{ link.source }}
-                        {% if link.scraped_from %} | From: {{ link.scraped_from }}{% endif %}
-                        {% if link.published_date %} | {{ link.published_date[:16] }}{% endif %}
-                    </div>
-                    {% if link.description %}
-                    <div class="link-description">{{ link.description[:200] }}{% if link.description|length > 200 %}...{% endif %}</div>
-                    {% endif %}
-                    <div class="link-tags">
-                        <span class="tag tag-category">{{ link.category }}</span>
-                        {% if link.priority == 1 %}
-                        <span class="tag" style="background: #c9a227; color: white;">High Priority</span>
-                        {% endif %}
-                    </div>
-                </div>
-                <div class="link-actions">
-                    <a href="{{ url_for('edit_link', link_id=link.id) }}" class="btn btn-sm btn-secondary">Edit</a>
-                </div>
-            </li>
+    <h2>Google News Queries</h2>
+    <table class="sources-table">
+        <thead>
+            <tr>
+                <th>Query</th>
+                <th>Category</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for query in google_queries %}
+            <tr>
+                <td><code>{{ query.query }}</code></td>
+                <td>{{ query.category }}</td>
+            </tr>
             {% endfor %}
-        </ul>
-    </form>
+        </tbody>
+    </table>
 </div>
-{% else %}
-<div class="card" style="text-align: center; padding: 48px;">
-    <p style="color: #666; margin-bottom: 16px;">No scraped articles pending review.</p>
-    <button onclick="document.getElementById('runScrape').click();" class="btn btn-primary">
-        Run Scraper to Find Articles
-    </button>
-</div>
-{% endif %}
 
-{% endblock %}
-
-{% block scripts %}
-<script>
-// Only attach selectAll listener if element exists
-const selectAllEl = document.getElementById('selectAll');
-if (selectAllEl) {
-    selectAllEl.addEventListener('change', function() {
-        const checkboxes = document.querySelectorAll('.article-checkbox');
-        checkboxes.forEach(cb => cb.checked = this.checked);
-    });
+<style>
+.scrape-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+    margin-bottom: 24px;
+}
+.scrape-form {
+    margin-top: 20px;
+}
+.scrape-form .form-group {
+    margin-bottom: 16px;
+}
+.scrape-form select {
+    width: 100%;
+    padding: 12px;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    font-size: 14px;
+}
+.btn-large {
+    width: 100%;
+    padding: 16px;
+    font-size: 16px;
+}
+.scoring-tiers {
+    margin-top: 16px;
+}
+.tier {
+    padding: 12px;
+    margin-bottom: 12px;
+    background: #f9f9f9;
+    border-radius: 8px;
+}
+.tier-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+}
+.tier-label {
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: 600;
+}
+.tier-label.high { background: #d4edda; color: #155724; }
+.tier-label.medium { background: #fff3cd; color: #856404; }
+.tier-label.low { background: #e0e0e0; color: #666; }
+.tier-points {
+    font-size: 13px;
+    color: #666;
+}
+.tier-keywords {
+    font-size: 13px;
+    color: #444;
+    line-height: 1.5;
+}
+.note {
+    margin-top: 16px;
+    font-size: 13px;
+    color: #666;
+    font-style: italic;
+}
+.sources-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+.sources-table th, .sources-table td {
+    padding: 12px;
+    text-align: left;
+    border-bottom: 1px solid #eee;
+}
+.sources-table th {
+    font-weight: 600;
+    color: #666;
+    font-size: 13px;
+}
+.sources-table code {
+    font-size: 12px;
+    background: #f5f5f5;
+    padding: 2px 4px;
+    border-radius: 3px;
 }
 
-document.getElementById('runScrape').addEventListener('click', async function() {
-    const btn = this;
-    const resultDiv = document.getElementById('scrapeResult');
-
-    btn.disabled = true;
-    btn.textContent = 'Scraping...';
-    resultDiv.style.display = 'none';
-
-    try {
-        const response = await fetch('{{ url_for("run_scrape") }}', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'}
-        });
-        const data = await response.json();
-
-        if (data.success) {
-            resultDiv.className = 'alert';
-            resultDiv.style.background = '#f0fdf4';
-            resultDiv.style.color = '#166534';
-            resultDiv.style.border = '1px solid #bbf7d0';
-
-            let msg = `Found ${data.new_articles} relevant articles`;
-            if (data.skipped_old > 0 || data.skipped_low_score > 0) {
-                msg += ` (filtered: ${data.skipped_old || 0} old, ${data.skipped_low_score || 0} low relevance)`;
-            }
-            resultDiv.textContent = msg;
-            resultDiv.style.display = 'block';
-
-            if (data.new_articles > 0) {
-                setTimeout(() => location.reload(), 1500);
-            }
-        } else {
-            throw new Error(data.error || 'Scraping failed');
-        }
-    } catch (err) {
-        resultDiv.className = 'alert alert-error';
-        resultDiv.textContent = 'Error: ' + err.message;
-        resultDiv.style.display = 'block';
+@media (max-width: 768px) {
+    .scrape-grid {
+        grid-template-columns: 1fr;
     }
-
-    btn.disabled = false;
-    btn.textContent = 'Run Scraper Now';
-});
-</script>
+}
+</style>
 {% endblock %}
